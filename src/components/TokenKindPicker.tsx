@@ -13,7 +13,7 @@ type Props = {
 function badges(family: ChainFamily) {
   switch (family) {
     case "evm":
-      return { nft: "ERC-721", multi: "ERC-1155" };
+      return { nft: "ERC-721", multi: "Edition × ERC-721" };
     case "solana":
       return { nft: "Metaplex", multi: "SPL Edition" };
     case "tron":
@@ -28,7 +28,8 @@ function descriptions(family: ChainFamily) {
     case "evm":
       return {
         nft: "고유한 1개 토큰. 수집품·아트·증명서에 적합합니다.",
-        multi: "같은 자산을 여러 장 발행. 에디션·티켓·게임 아이템에 적합합니다.",
+        multi:
+          "같은 작품 에디션을 여러 개(ERC-721·동일 컬렉션). 클립이 ERC-1155 멀티를 막는 경우가 있어 NFT와 같은 형태로 발행합니다.",
       };
     case "solana":
       return {

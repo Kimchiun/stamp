@@ -19,7 +19,7 @@ import type { SupportedChain } from "@/lib/chains";
 import { explorerTx } from "@/lib/chains";
 import type { MintInput, MintOutcome } from "./types";
 import nftArtifact from "@/lib/contracts/StampOpenNFT.json";
-import multiArtifact from "@/lib/contracts/StampOpenMulti.json";
+import editionMinterArtifact from "@/lib/contracts/StampEditionMinter.json";
 import { connectEvmWallet, switchEvmChain } from "./evmInjected";
 import { wrapEip1193Provider, isUserCancelledError } from "@/lib/wallet/errors";
 import {
@@ -519,7 +519,10 @@ async function sendLegacyWalletTx(args: {
 
 /** Fixed salts → same STAMP collection address on every mint for a given chain. */
 const PLATFORM_SALT_NFT = id("STAMP_OPEN_NFT_V1");
-const PLATFORM_SALT_MULTI = id("STAMP_OPEN_MULTI_V1");
+const PLATFORM_SALT_EDITION = id("STAMP_EDITION_MINTER_V1");
+
+/** EVM multi-token cap (gas); exclusive editions on ERC-721. */
+export const MAX_EVM_EDITIONS = 50;
 
 async function ensureCreate2Factory(
   publicRpc: JsonRpcProvider,
@@ -541,28 +544,25 @@ async function ensureCreate2Factory(
   }
 }
 
-/**
- * Shared platform collection: no constructor args, fixed salt.
- * First mint on a chain may deploy; later mints only call mint().
- */
-async function resolvePlatformCollection(args: {
-  publicRpc: JsonRpcProvider;
-  chainId: number;
-  isMulti: boolean;
-}): Promise<{
+type Create2Plan = {
   to: string;
   data: string;
   predictedAddress: string;
   needsDeploy: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   artifact: { abi: any; bytecode: string };
-}> {
+};
+
+async function planCreate2Deploy(args: {
+  publicRpc: JsonRpcProvider;
+  chainId: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  artifact: { abi: any; bytecode: string };
+  salt: string;
+}): Promise<Create2Plan> {
   await ensureCreate2Factory(args.publicRpc, args.chainId);
 
-  const artifact = args.isMulti ? multiArtifact : nftArtifact;
-  const salt = args.isMulti ? PLATFORM_SALT_MULTI : PLATFORM_SALT_NFT;
-
-  const factory = new ContractFactory(artifact.abi, artifact.bytecode);
+  const factory = new ContractFactory(args.artifact.abi, args.artifact.bytecode);
   const deployTx = await factory.getDeployTransaction();
   if (!deployTx.data) {
     throw new Error("배포 바이트코드를 만들지 못했습니다.");
@@ -570,10 +570,10 @@ async function resolvePlatformCollection(args: {
 
   const initCode =
     typeof deployTx.data === "string" ? deployTx.data : hexlify(deployTx.data);
-  const data = hexlify(concat([salt, initCode]));
+  const data = hexlify(concat([args.salt, initCode]));
   const predictedAddress = getCreate2Address(
     CREATE2_DEPLOYER,
-    salt,
+    args.salt,
     keccak256(initCode),
   );
 
@@ -582,7 +582,6 @@ async function resolvePlatformCollection(args: {
     const code = await args.publicRpc.getCode(predictedAddress);
     needsDeploy = !code || code === "0x";
   } catch {
-    /* assume first-time deploy if eth_getCode flakes */
     needsDeploy = true;
   }
 
@@ -591,8 +590,77 @@ async function resolvePlatformCollection(args: {
     data,
     predictedAddress,
     needsDeploy,
-    artifact,
+    artifact: args.artifact,
   };
+}
+
+/** Shared ERC-721 STAMP collection (same address for single + multi editions). */
+async function resolveStampCollection(args: {
+  publicRpc: JsonRpcProvider;
+  chainId: number;
+}): Promise<Create2Plan> {
+  return planCreate2Deploy({
+    publicRpc: args.publicRpc,
+    chainId: args.chainId,
+    artifact: nftArtifact as Create2Plan["artifact"],
+    salt: PLATFORM_SALT_NFT,
+  });
+}
+
+/** Helper that batch-mints ERC-721 editions in one wallet tx. */
+async function resolveEditionMinter(args: {
+  publicRpc: JsonRpcProvider;
+  chainId: number;
+}): Promise<Create2Plan> {
+  return planCreate2Deploy({
+    publicRpc: args.publicRpc,
+    chainId: args.chainId,
+    artifact: editionMinterArtifact as Create2Plan["artifact"],
+    salt: PLATFORM_SALT_EDITION,
+  });
+}
+
+async function maybeDeployCreate2(args: {
+  plan: Create2Plan;
+  rawProvider: Eip1193Provider;
+  publicRpc: JsonRpcProvider;
+  chain: SupportedChain;
+  from: string;
+  onStep?: (step: EvmMintStep) => void;
+}): Promise<void> {
+  if (!args.plan.needsDeploy) return;
+
+  let deployGas: bigint;
+  try {
+    deployGas = await args.publicRpc.estimateGas({
+      from: args.from,
+      to: args.plan.to,
+      data: args.plan.data,
+    });
+  } catch {
+    deployGas = BigInt(3_500_000);
+  }
+
+  args.onStep?.("deploy_contract");
+  try {
+    await sendLegacyWalletTx({
+      rawProvider: args.rawProvider,
+      publicRpc: args.publicRpc,
+      chain: args.chain,
+      from: args.from,
+      tx: { to: args.plan.to, data: args.plan.data },
+      gasLimit: withGasBuffer(deployGas, BigInt(3_500_000)),
+    });
+  } catch (e: unknown) {
+    let code = "0x";
+    try {
+      code =
+        (await args.publicRpc.getCode(args.plan.predictedAddress)) || "0x";
+    } catch {
+      /* */
+    }
+    if (!code || code === "0x") throw e;
+  }
 }
 
 /**
@@ -609,42 +677,62 @@ export async function estimateEvmMintFee(
   }
 
   const isMulti = input.kind === "multi";
-  const amount = Math.max(1, Math.floor(input.amount || 1));
+  const amount = Math.min(
+    MAX_EVM_EDITIONS,
+    Math.max(1, Math.floor(input.amount || 1)),
+  );
   const rpc = createPublicRpc(chain);
 
-  const platform = await resolvePlatformCollection({
+  const collection = await resolveStampCollection({
     publicRpc: rpc,
     chainId: chain.chainId,
-    isMulti,
   });
+  const editionMinter = isMulti
+    ? await resolveEditionMinter({ publicRpc: rpc, chainId: chain.chainId })
+    : null;
 
   let deployGas = BigInt(0);
-  if (platform.needsDeploy) {
+  for (const plan of [collection, editionMinter].filter(Boolean) as Create2Plan[]) {
+    if (!plan.needsDeploy) continue;
     try {
-      deployGas = await rpc.estimateGas({
+      const g = await rpc.estimateGas({
         from: ownerAddress,
-        to: platform.to,
-        data: platform.data,
+        to: plan.to,
+        data: plan.data,
       });
+      deployGas += g;
     } catch {
-      deployGas = BigInt(3_500_000);
+      deployGas += BigInt(2_500_000);
     }
   }
 
-  let mintGas = BigInt(isMulti ? 180_000 : 140_000);
-  if (!platform.needsDeploy) {
+  // Rough mint gas: single mint ~140k; editions scale
+  let mintGas = isMulti
+    ? BigInt(120_000) * BigInt(amount) + BigInt(80_000)
+    : BigInt(140_000);
+  if (!collection.needsDeploy && !(editionMinter?.needsDeploy)) {
     try {
-      const c = new Contract(platform.predictedAddress, platform.artifact.abi, rpc);
+      const c = new Contract(
+        isMulti ? editionMinter!.predictedAddress : collection.predictedAddress,
+        isMulti ? editionMinterArtifact.abi : nftArtifact.abi,
+        rpc,
+      );
       const mintData = isMulti
-        ? c.interface.encodeFunctionData("mint", [
+        ? c.interface.encodeFunctionData("mintEditions", [
+            collection.predictedAddress,
             ownerAddress,
             amount,
             input.tokenURI,
           ])
-        : c.interface.encodeFunctionData("mint", [ownerAddress, input.tokenURI]);
+        : c.interface.encodeFunctionData("mint", [
+            ownerAddress,
+            input.tokenURI,
+          ]);
       mintGas = await rpc.estimateGas({
         from: ownerAddress,
-        to: platform.predictedAddress,
+        to: isMulti
+          ? editionMinter!.predictedAddress
+          : collection.predictedAddress,
         data: mintData,
       });
     } catch {
@@ -664,9 +752,11 @@ export async function estimateEvmMintFee(
     gasPriceGwei: (Number(gasPrice) / 1e9).toFixed(4),
     totalFee: formatEther(totalWei),
     nativeSymbol: chain.nativeCurrency.symbol,
-    note: platform.needsDeploy
-      ? `체인 첫 STAMP 컬렉션 배포 + 민트 (이후는 민트만). 컬렉션 name/symbol=${PLATFORM_COLLECTION_NAME}/${PLATFORM_COLLECTION_SYMBOL}`
-      : `공유 STAMP 컬렉션에 민트만 (${platform.predictedAddress.slice(0, 10)}…)`,
+    note: isMulti
+      ? `멀티=ERC-721 에디션 ${amount}개(동일 컬렉션). 클립 ERC-1155 차단 회피.`
+      : collection.needsDeploy
+        ? `체인 첫 STAMP 컬렉션 배포 + 민트`
+        : `공유 STAMP 컬렉션 민트 (${collection.predictedAddress.slice(0, 10)}…)`,
   };
 }
 
@@ -677,10 +767,9 @@ function withGasBuffer(gas: bigint, fallback: bigint): bigint {
 }
 
 /**
- * EVM mint order:
- * 1. (optional) switch network
- * 2. (once per chain) deploy shared STAMP collection via CREATE2 — has `to` for Klip
- * 3. mint onto that collection (token name lives in metadata/IPFS)
+ * EVM mint:
+ * NFT → shared StampOpenNFT
+ * multi → same collection via StampEditionMinter (N× ERC-721, not ERC-1155)
  */
 export async function mintOnEvm(
   chain: SupportedChain,
@@ -724,50 +813,43 @@ export async function mintOnEvm(
     );
 
     const isMulti = input.kind === "multi";
-    const amount = Math.max(1, Math.floor(input.amount || 1));
+    const amount = Math.min(
+      MAX_EVM_EDITIONS,
+      Math.max(1, Math.floor(input.amount || 1)),
+    );
     const publicRpc = createPublicRpc(chain);
 
-    const platform = await resolvePlatformCollection({
+    const collection = await resolveStampCollection({
       publicRpc,
       chainId: chain.chainId,
-      isMulti,
     });
-    const contractAddress = platform.predictedAddress;
 
-    if (platform.needsDeploy) {
-      let deployGas: bigint;
-      try {
-        deployGas = await publicRpc.estimateGas({
-          from: ownerAddress,
-          to: platform.to,
-          data: platform.data,
-        });
-      } catch {
-        deployGas = BigInt(3_500_000);
-      }
+    await maybeDeployCreate2({
+      plan: collection,
+      rawProvider,
+      publicRpc,
+      chain,
+      from: ownerAddress,
+      onStep: opts.onStep,
+    });
 
-      opts.onStep?.("deploy_contract");
-      try {
-        await sendLegacyWalletTx({
-          rawProvider,
-          publicRpc,
-          chain,
-          from: ownerAddress,
-          tx: { to: platform.to, data: platform.data },
-          gasLimit: withGasBuffer(deployGas, BigInt(3_500_000)),
-        });
-      } catch (e: unknown) {
-        // Race: another user may have just deployed the same CREATE2 address
-        let code = "0x";
-        try {
-          code = (await publicRpc.getCode(contractAddress)) || "0x";
-        } catch {
-          /* ignore */
-        }
-        if (!code || code === "0x") throw e;
-      }
+    let editionMinter: Create2Plan | null = null;
+    if (isMulti) {
+      editionMinter = await resolveEditionMinter({
+        publicRpc,
+        chainId: chain.chainId,
+      });
+      await maybeDeployCreate2({
+        plan: editionMinter,
+        rawProvider,
+        publicRpc,
+        chain,
+        from: ownerAddress,
+        onStep: opts.onStep,
+      });
     }
 
+    const contractAddress = collection.predictedAddress;
     try {
       const deployedCode = await publicRpc.getCode(contractAddress);
       if (!deployedCode || deployedCode === "0x") {
@@ -778,29 +860,54 @@ export async function mintOnEvm(
         };
       }
     } catch {
-      /* mint will fail clearly if missing */
+      /* */
     }
 
-    const contract = new Contract(contractAddress, platform.artifact.abi, signer);
-
     opts.onStep?.("mint_tokens");
-    const mintPopulated = isMulti
-      ? await contract.mint.populateTransaction(
-          ownerAddress,
-          amount,
-          input.tokenURI,
-        )
-      : await contract.mint.populateTransaction(ownerAddress, input.tokenURI);
+
+    let mintTo: string;
+    let mintData: string;
+    let gasFallback: bigint;
+
+    if (isMulti && editionMinter) {
+      const minter = new Contract(
+        editionMinter.predictedAddress,
+        editionMinterArtifact.abi,
+        signer,
+      );
+      const mintPopulated = await minter.mintEditions.populateTransaction(
+        contractAddress,
+        ownerAddress,
+        amount,
+        input.tokenURI,
+      );
+      mintTo = editionMinter.predictedAddress;
+      mintData = mintPopulated.data || "0x";
+      gasFallback = BigInt(120_000) * BigInt(amount) + BigInt(100_000);
+    } else {
+      const contract = new Contract(
+        contractAddress,
+        collection.artifact.abi,
+        signer,
+      );
+      const mintPopulated = await contract.mint.populateTransaction(
+        ownerAddress,
+        input.tokenURI,
+      );
+      mintTo = contractAddress;
+      mintData = mintPopulated.data || "0x";
+      gasFallback = BigInt(140_000);
+    }
 
     let mintGas: bigint;
     try {
       mintGas = await publicRpc.estimateGas({
-        ...mintPopulated,
         from: ownerAddress,
-        to: contractAddress,
+        to: mintTo,
+        data: mintData,
       });
     } catch {
-      mintGas = BigInt(isMulti ? 180_000 : 140_000);
+      mintGas = gasFallback;
     }
 
     const minted = await sendLegacyWalletTx({
@@ -808,12 +915,13 @@ export async function mintOnEvm(
       publicRpc,
       chain,
       from: ownerAddress,
-      tx: { ...mintPopulated, to: contractAddress },
-      gasLimit: withGasBuffer(mintGas, BigInt(isMulti ? 180_000 : 140_000)),
+      tx: { to: mintTo, data: mintData },
+      gasLimit: withGasBuffer(mintGas, gasFallback),
     });
 
     const receipt = await publicRpc.getTransactionReceipt(minted.hash);
-    const tokenId = extractTokenIdFromReceipt(receipt, isMulti);
+    // Editions still emit ERC-721 Transfer logs
+    const tokenId = extractTokenIdFromReceipt(receipt, false);
 
     return {
       success: true,

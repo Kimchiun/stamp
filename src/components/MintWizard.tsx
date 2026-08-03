@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Unplug, Wallet } from "lucide-react";
 import { CHAINS, type SupportedChain } from "@/lib/chains";
-import { mintNft, estimateEvmMintFee, type FeeEstimate, MAX_XRPL_EDITIONS } from "@/lib/adapters";
+import { mintNft, estimateEvmMintFee, type FeeEstimate, MAX_XRPL_EDITIONS, MAX_EVM_EDITIONS } from "@/lib/adapters";
 import { uploadMetadata, checkPublicUploads, type UploadStatus } from "@/lib/ipfs";
 import type { MintResult, TokenKind } from "@/lib/adapters/types";
 import { validateKlipFields } from "@/lib/klipFilters";
@@ -134,6 +134,9 @@ export function MintWizard() {
     if (next.family === "xrpl" && kind === "multi" && amount > MAX_XRPL_EDITIONS) {
       setAmount(MAX_XRPL_EDITIONS);
     }
+    if (next.family === "evm" && kind === "multi" && amount > MAX_EVM_EDITIONS) {
+      setAmount(MAX_EVM_EDITIONS);
+    }
     setStatus("idle");
     setResult(null);
     setError(null);
@@ -145,6 +148,9 @@ export function MintWizard() {
     setKind(next);
     if (chain.family === "xrpl" && next === "multi" && amount > MAX_XRPL_EDITIONS) {
       setAmount(MAX_XRPL_EDITIONS);
+    }
+    if (chain.family === "evm" && next === "multi" && amount > MAX_EVM_EDITIONS) {
+      setAmount(MAX_EVM_EDITIONS);
     }
     setStatus("idle");
     setResult(null);
@@ -391,7 +397,9 @@ export function MintWizard() {
             maxAmount={
               chain.family === "xrpl" && kind === "multi"
                 ? MAX_XRPL_EDITIONS
-                : undefined
+                : chain.family === "evm" && kind === "multi"
+                  ? MAX_EVM_EDITIONS
+                  : undefined
             }
             preview={preview}
             onChange={(field, value) => {
@@ -404,6 +412,9 @@ export function MintWizard() {
                 let next = Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
                 if (chain.family === "xrpl" && kind === "multi") {
                   next = Math.min(next, MAX_XRPL_EDITIONS);
+                }
+                if (chain.family === "evm" && kind === "multi") {
+                  next = Math.min(next, MAX_EVM_EDITIONS);
                 }
                 setAmount(next);
               }
@@ -527,20 +538,21 @@ export function MintWizard() {
             <ol className="mt-2 list-decimal space-y-1 pl-4">
               <li>네트워크 전환 (이미 맞으면 생략)</li>
               <li>
-                (체인당 최초 1회) STAMP 컬렉션 배포 — 이후 민터는 이 단계 생략
+                (체인당 최초) STAMP 컬렉션 배포
+                {kind === "multi" ? " + 에디션 민터 배포" : ""}
               </li>
               <li>
                 민트 1회
                 {kind === "multi"
-                  ? ` — 수량 ${amount.toLocaleString()}개를 이 한 번에 처리`
-                  : " — 토큰 1개"}
+                  ? ` — ERC-721 에디션 ${amount.toLocaleString()}개 (동일 컬렉션·한 트랜잭션)`
+                  : " — NFT 1개"}
               </li>
             </ol>
             <p className="mt-2">
-              모든 STAMP 민트가 같은 컨트랙트 주소를 씁니다(CREATE2 고정 salt).
-              온체인 컬렉션 name/symbol은 STAMP. 작품 이름·이미지는 공개 HTTPS
-              메타데이터 URL에만 들어갑니다(공개 IPFS 게이트웨이 미사용).
-              이름·심볼에 URL·스캠 문구·코인 심볼은 막습니다.
+              멀티토큰도 클립 호환을 위해 ERC-1155가 아니라 공유 STAMP ERC-721
+              컬렉션에 수량만큼 찍습니다(지갑에 NFT 여러 장으로 표시). 온체인
+              name/symbol은 STAMP. 작품 이름·이미지는 앱 도메인 메타 URL에
+              들어갑니다. 이름·심볼 스캠 문구는 막습니다.
             </p>
             <p className="mt-2 text-[var(--ink)]">
               클립 갤러리 노출은 해당 컬렉션 주소를 클립에 등록해야 할 수 있습니다.
