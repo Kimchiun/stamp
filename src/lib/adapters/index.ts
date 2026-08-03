@@ -62,7 +62,7 @@ export async function mintNft(
   }
 }
 
-export { connectEvmWallet, mintOnEvm, estimateEvmMintFee, MAX_EVM_EDITIONS } from "./evm";
+export { connectEvmWallet, mintOnEvm, estimateEvmMintFee, MAX_EVM_MULTI_AMOUNT } from "./evm";
 export type { FeeEstimate, EvmMintStep } from "./evm";
 export { connectSolanaWallet, mintOnSolana } from "./solana";
 export { connectTronWallet, mintOnTron } from "./tron";

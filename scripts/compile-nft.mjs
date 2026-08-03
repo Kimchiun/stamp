@@ -49,8 +49,7 @@ function compileFile(solFile, contractName, outName) {
 }
 
 compileFile("StampOpenNFT.sol", "StampOpenNFT", "StampOpenNFT.json");
-compileFile("StampEditionMinter.sol", "StampEditionMinter", "StampEditionMinter.json");
-// Legacy / unused by current mint path
 compileFile("StampOpenMulti.sol", "StampOpenMulti", "StampOpenMulti.json");
+// Legacy
 compileFile("SimpleNFT.sol", "SimpleNFT", "SimpleNFT.json");
 compileFile("SimpleMultiToken.sol", "SimpleMultiToken", "SimpleMultiToken.json");
