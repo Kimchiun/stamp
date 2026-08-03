@@ -9,6 +9,7 @@ import {
 } from "./config";
 import { putS3Objects } from "./s3";
 import { saveLocalMetadata } from "@/lib/localMeta";
+import { assertAndAddDailyUsage, type DailyUsage } from "./usage";
 
 export type StoredMediaResult = {
   id: string;
@@ -17,6 +18,7 @@ export type StoredMediaResult = {
   mode: "s3" | "local";
   publicBase: string;
   klipReady: boolean;
+  usage?: DailyUsage;
 };
 
 /**
@@ -42,6 +44,15 @@ export async function storeNftMedia(params: {
   const mime = params.file.type || "image/png";
   const ext = extFromMime(mime);
 
+  const metaEstimate = Buffer.byteLength(
+    JSON.stringify({
+      name: params.name,
+      description: params.description,
+      image: "https://placeholder.example/image",
+    }),
+    "utf8",
+  );
+
   if (s3Configured()) {
     const id = randomUUID().replace(/-/g, "").slice(0, 16);
     const imageKey = `n/${id}/image.${ext}`;
@@ -55,6 +66,9 @@ export async function storeNftMedia(params: {
       external_url: publicBase,
       properties: { image: imageUrl },
     };
+    const metaBuf = Buffer.from(JSON.stringify(metaBody), "utf8");
+    const usage = await assertAndAddDailyUsage(bytes.length + metaBuf.length);
+
     await putS3Objects([
       {
         key: imageKey,
@@ -63,7 +77,7 @@ export async function storeNftMedia(params: {
       },
       {
         key: metaKey,
-        body: Buffer.from(JSON.stringify(metaBody), "utf8"),
+        body: metaBuf,
         contentType: "application/json",
       },
     ]);
@@ -75,10 +89,12 @@ export async function storeNftMedia(params: {
       mode: "s3",
       publicBase,
       klipReady: status.klipReady,
+      usage,
     };
   }
 
-  // Local disk + Next routes /api/meta/*
+  const usage = await assertAndAddDailyUsage(bytes.length + metaEstimate + 256);
+
   const saved = await saveLocalMetadata({
     file: params.file,
     name: params.name,
@@ -87,7 +103,6 @@ export async function storeNftMedia(params: {
   const imageUrl = `${publicBase}/api/meta/${saved.id}/image`;
   const tokenURI = `${publicBase}/api/meta/${saved.id}`;
 
-  // Also drop a static copy under .data for optional static hosts
   try {
     const mirror = path.join(process.cwd(), ".data", "public-mirror", saved.id);
     await mkdir(mirror, { recursive: true });
@@ -112,5 +127,6 @@ export async function storeNftMedia(params: {
     mode: "local",
     publicBase,
     klipReady: status.klipReady,
+    usage,
   };
 }

@@ -1,21 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMediaStatus, s3Configured } from "@/lib/media/config";
 import { probeS3Media } from "@/lib/media/s3";
+import { getDailyMediaUsage } from "@/lib/media/usage";
 
 export const runtime = "nodejs";
 
 /**
  * Media pipeline diagnostics.
  * GET /api/media/health
- * GET /api/media/health?probe=1  — live S3 put+public GET (requires S3 env)
+ * GET /api/media/health?probe=1
  */
 export async function GET(req: NextRequest) {
   const status = getMediaStatus(req.nextUrl.origin);
   const probe = req.nextUrl.searchParams.get("probe") === "1";
 
+  let usage = null;
+  try {
+    usage = await getDailyMediaUsage();
+  } catch {
+    /* */
+  }
+
   const body: Record<string, unknown> = {
     ...status,
     s3Configured: s3Configured(),
+    usage,
     env: {
       hasMediaPublicBase: Boolean(process.env.MEDIA_PUBLIC_BASE_URL?.trim()),
       hasAppUrl: Boolean(process.env.NEXT_PUBLIC_APP_URL?.trim()),
@@ -25,6 +34,7 @@ export async function GET(req: NextRequest) {
         process.env.S3_ACCESS_KEY_ID?.trim() &&
           process.env.S3_SECRET_ACCESS_KEY?.trim(),
       ),
+      dailyLimitMb: process.env.MEDIA_DAILY_LIMIT_MB || "100",
     },
     checklist: [
       {
@@ -43,8 +53,7 @@ export async function GET(req: NextRequest) {
       {
         id: "r2_endpoint",
         done: Boolean(process.env.S3_ENDPOINT?.trim()),
-        title:
-          "S3_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+        title: "S3_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
       },
       {
         id: "public_base",
@@ -56,6 +65,11 @@ export async function GET(req: NextRequest) {
         id: "klip_ready",
         done: status.klipReady,
         title: "tokenURI 호스트가 공개 https (localhost 아님)",
+      },
+      {
+        id: "daily_quota",
+        done: true,
+        title: `일일 업로드 한도 ${process.env.MEDIA_DAILY_LIMIT_MB || "100"}MB (KST)`,
       },
     ],
   };

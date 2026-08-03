@@ -1,17 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMediaStatus } from "@/lib/media/config";
 import { storeNftMedia } from "@/lib/media/store";
+import { getDailyMediaUsage } from "@/lib/media/usage";
 
 export const runtime = "nodejs";
 
 /**
  * NFT image + metadata upload.
  * Primary: own HTTPS domain (local API routes or S3/R2 + MEDIA_PUBLIC_BASE_URL).
- * Does NOT use public IPFS gateways as tokenURI (often blocked by wallet apps).
  */
 export async function GET(req: NextRequest) {
   const origin = req.nextUrl.origin;
   const status = getMediaStatus(origin);
+  let usage = null;
+  try {
+    usage = await getDailyMediaUsage();
+  } catch {
+    /* */
+  }
   return NextResponse.json({
     publicUploads: status.canUpload,
     klipReady: status.klipReady,
@@ -19,6 +25,7 @@ export async function GET(req: NextRequest) {
     gateway: status.publicBase,
     publicBase: status.publicBase,
     hint: status.hint,
+    usage,
   });
 }
 
@@ -63,11 +70,11 @@ export async function POST(req: NextRequest) {
       id: stored.id,
       publicBase: stored.publicBase,
       klipReady: stored.klipReady,
+      usage: stored.usage,
     });
   } catch (e: unknown) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "업로드 실패" },
-      { status: 500 },
-    );
+    const msg = e instanceof Error ? e.message : "업로드 실패";
+    const over = msg.includes("한도");
+    return NextResponse.json({ error: msg }, { status: over ? 429 : 500 });
   }
 }

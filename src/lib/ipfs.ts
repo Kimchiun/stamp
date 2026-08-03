@@ -1,3 +1,13 @@
+export type MediaUsage = {
+  date: string;
+  tz: string;
+  usedBytes: number;
+  limitBytes: number;
+  remainingBytes: number;
+  uploadCount: number;
+  limitMb: number;
+};
+
 export type UploadStatus = {
   publicUploads: boolean;
   klipReady: boolean;
@@ -7,11 +17,11 @@ export type UploadStatus = {
   hint: string;
   s3Configured?: boolean;
   checklist?: { id: string; done: boolean; title: string }[];
+  usage?: MediaUsage | null;
 };
 
 /**
  * Upload image + metadata under a public HTTPS-friendly URL (own domain / CDN).
- * Avoids public IPFS gateways that wallet apps often block.
  */
 export async function uploadMetadata(params: {
   file: File;
@@ -22,6 +32,7 @@ export async function uploadMetadata(params: {
   imagePreview: string;
   mode?: string;
   klipReady?: boolean;
+  usage?: MediaUsage;
 }> {
   const form = new FormData();
   form.append("file", params.file);
@@ -77,5 +88,6 @@ export async function checkPublicUploads(): Promise<UploadStatus> {
     hint: String(base.hint || ""),
     s3Configured: Boolean(base.s3Configured),
     checklist: Array.isArray(base.checklist) ? base.checklist : undefined,
+    usage: (health?.usage || upload?.usage || null) as MediaUsage | null,
   };
 }

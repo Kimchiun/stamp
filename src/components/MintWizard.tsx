@@ -317,8 +317,30 @@ export function MintWizard() {
       {uploadStatus?.klipReady && (
         <p className="xerox-label text-[var(--lime)]">
           {uploadStatus.hint}
+          {uploadStatus.usage && (
+            <>
+              {" · "}
+              오늘 미디어{" "}
+              {(uploadStatus.usage.usedBytes / (1024 * 1024)).toFixed(1)}/
+              {uploadStatus.usage.limitMb}MB
+            </>
+          )}
         </p>
       )}
+      {uploadStatus?.usage &&
+        uploadStatus.usage.remainingBytes < 2 * 1024 * 1024 && (
+          <div className="sheet sheet-pink sheet-torn px-5 py-4 text-sm text-[var(--ink)]">
+            <p className="font-bold uppercase tracking-wide">
+              일일 미디어 한도 임박
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-[var(--ink)]/75">
+              한국 시간 기준 하루 {uploadStatus.usage.limitMb}MB까지 업로드할 수
+              있습니다. 남은 용량 약{" "}
+              {(uploadStatus.usage.remainingBytes / (1024 * 1024)).toFixed(1)}
+              MB · 자정(KST)에 리셋됩니다.
+            </p>
+          </div>
+        )}
 
       <FlyerSheet tone="lime" layer="Layer 01" title="1. 체인">
         <div className="mb-5 flex justify-end">
