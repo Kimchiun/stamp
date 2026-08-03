@@ -1,26 +1,481 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --ink: #0e0e0e;
+  --pink: #ff2d55;
+  --lime: #c8ff00;
+  --cream: #f4f0e6;
+  --cream-2: #e6ddd0;
+  --bleached: #c4b8a8;
+  --muted: #3a3a3a;
+  --line: #1a1a1a;
+  --white: #ffffff;
+  --danger: #ff2d55;
+  --danger-soft: #2a0a12;
+  --paper: var(--cream);
+  --paper-2: var(--cream-2);
+  --accent: var(--pink);
+  --accent-soft: color-mix(in srgb, var(--pink) 18%, var(--cream));
+  --background: var(--ink);
+  --foreground: var(--cream);
+  --ease-rip: cubic-bezier(0.22, 1, 0.36, 1);
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-mono: var(--font-mono);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--ink);
+  color: var(--cream);
+  font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  min-height: 100%;
+}
+
+::selection {
+  background: var(--lime);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 3px;
+}
+
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Street wall base — blotches + scan, brick lives in GraffitiBackdrop */
+.flyer-wall {
+  background-color: #0e0e0e;
+  background-image:
+    radial-gradient(circle at 12% 18%, color-mix(in srgb, var(--pink) 32%, transparent), transparent 38%),
+    radial-gradient(circle at 88% 22%, color-mix(in srgb, var(--lime) 28%, transparent), transparent 36%),
+    radial-gradient(circle at 50% 8%, color-mix(in srgb, var(--pink) 18%, transparent), transparent 32%),
+    radial-gradient(ellipse 70% 45% at 8% 88%, color-mix(in srgb, var(--lime) 22%, transparent), transparent 48%),
+    radial-gradient(ellipse 55% 40% at 92% 78%, color-mix(in srgb, var(--pink) 20%, transparent), transparent 45%),
+    radial-gradient(circle at 40% 55%, color-mix(in srgb, var(--cream) 8%, transparent), transparent 30%),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      color-mix(in srgb, var(--cream) 3.5%, transparent) 2px,
+      color-mix(in srgb, var(--cream) 3.5%, transparent) 3px
+    );
+}
+
+.graffiti-brick {
+  opacity: 0.4;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='32' viewBox='0 0 72 32'%3E%3Cpath d='M0 0h72M0 16h72M0 32h72M18 0v16M54 0v16M0 16v16M36 16v16' stroke='%23f4f0e6' stroke-opacity='0.14' stroke-width='1' fill='none'/%3E%3C/svg%3E");
+}
+
+/* Soft spray fog — atmosphere only */
+.wall-spray {
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 45% 40% at 12% 25%, color-mix(in srgb, var(--pink) 18%, transparent), transparent 70%),
+    radial-gradient(ellipse 40% 45% at 88% 20%, color-mix(in srgb, var(--lime) 14%, transparent), transparent 68%),
+    radial-gradient(ellipse 50% 35% at 80% 75%, color-mix(in srgb, var(--pink) 12%, transparent), transparent 70%),
+    radial-gradient(ellipse 40% 30% at 15% 80%, color-mix(in srgb, var(--lime) 10%, transparent), transparent 68%);
+  opacity: 0.85;
+}
+
+/* Soft mural on brick — no frame/shadow; edges dissolve so it reads as paint */
+.mural-wash {
+  isolation: isolate;
+  mix-blend-mode: normal;
+  -webkit-mask-image: radial-gradient(
+    ellipse 66% 66% at 50% 50%,
+    #000 15%,
+    rgba(0, 0, 0, 0.88) 40%,
+    rgba(0, 0, 0, 0.35) 60%,
+    transparent 76%
+  );
+  mask-image: radial-gradient(
+    ellipse 66% 66% at 50% 50%,
+    #000 15%,
+    rgba(0, 0, 0, 0.88) 40%,
+    rgba(0, 0, 0, 0.35) 60%,
+    transparent 76%
+  );
+  filter: saturate(0.85) contrast(1.02) brightness(0.85);
+}
+
+.sheet {
+  position: relative;
+  border: 2px solid var(--ink);
+  box-shadow:
+    4px 6px 0 rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.sheet-pink {
+  background: var(--pink);
+  color: var(--ink);
+}
+
+.sheet-lime {
+  background: var(--lime);
+  color: var(--ink);
+}
+
+.sheet-cream {
+  background: var(--cream);
+  color: var(--ink);
+}
+
+.sheet-bleached {
+  background: var(--bleached);
+  color: var(--ink);
+}
+
+.sheet-torn {
+  clip-path: polygon(
+    0% 2.4%,
+    1.5% 0.4%,
+    4% 2.8%,
+    7% 0%,
+    11% 3.2%,
+    15% 0.6%,
+    19% 2.5%,
+    24% 0.2%,
+    29% 3%,
+    34% 0.5%,
+    39% 2.7%,
+    44% 0%,
+    49% 2.9%,
+    54% 0.4%,
+    59% 2.2%,
+    64% 0.1%,
+    69% 3.1%,
+    74% 0.3%,
+    79% 2.6%,
+    84% 0%,
+    89% 2.8%,
+    94% 0.5%,
+    97% 2.4%,
+    100% 0.8%,
+    100% 97.2%,
+    97.5% 99.6%,
+    94% 97%,
+    90% 100%,
+    85% 97.4%,
+    80% 99.8%,
+    75% 97.1%,
+    70% 100%,
+    65% 97.3%,
+    60% 99.5%,
+    55% 97%,
+    50% 100%,
+    45% 97.2%,
+    40% 99.7%,
+    35% 97.1%,
+    30% 99.4%,
+    25% 97%,
+    20% 100%,
+    15% 97.5%,
+    10% 99.6%,
+    5% 97.2%,
+    2% 99.8%,
+    0% 97.4%
+  );
+}
+
+.sheet-torn-deep {
+  clip-path: polygon(
+    0% 3.5%,
+    3% 0%,
+    6% 4%,
+    10% 0.5%,
+    14% 3.8%,
+    18% 0%,
+    23% 4.2%,
+    28% 0.8%,
+    33% 3.5%,
+    38% 0%,
+    43% 4%,
+    48% 0.5%,
+    53% 3.8%,
+    58% 0%,
+    63% 4.2%,
+    68% 0.6%,
+    73% 3.5%,
+    78% 0%,
+    83% 4%,
+    88% 0.5%,
+    93% 3.6%,
+    97% 0%,
+    100% 3%,
+    100% 96.5%,
+    96% 100%,
+    91% 96.2%,
+    86% 100%,
+    81% 96%,
+    76% 99.8%,
+    71% 96.4%,
+    66% 100%,
+    61% 96%,
+    56% 99.5%,
+    51% 96.2%,
+    46% 100%,
+    41% 96%,
+    36% 99.8%,
+    31% 96.3%,
+    26% 100%,
+    21% 96%,
+    16% 99.5%,
+    11% 96.2%,
+    6% 100%,
+    2% 96.5%,
+    0% 99%
+  );
+}
+
+/* Registration / scissors cut marks on paste zone */
+.cut-mark {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-color: var(--ink);
+  border-style: solid;
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 5;
+}
+.cut-mark-tl {
+  top: 8px;
+  left: 8px;
+  border-width: 2px 0 0 2px;
+}
+.cut-mark-tr {
+  top: 8px;
+  right: 8px;
+  border-width: 2px 2px 0 0;
+}
+.cut-mark-bl {
+  bottom: 8px;
+  left: 8px;
+  border-width: 0 0 2px 2px;
+}
+.cut-mark-br {
+  bottom: 8px;
+  right: 8px;
+  border-width: 0 2px 2px 0;
+}
+
+.perf-line {
+  background-image: radial-gradient(circle, var(--lime) 1.5px, transparent 1.6px);
+  background-size: 12px 4px;
+  background-repeat: repeat-x;
+  background-position: center;
+  height: 4px;
+}
+
+.cursor-scissors {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23c8ff00' stroke-width='2'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cline x1='20' y1='4' x2='8.12' y2='15.88'/%3E%3Cline x1='14.47' y1='14.48' x2='20' y2='20'/%3E%3Cline x1='8.12' y1='8.12' x2='12' y2='12'/%3E%3C/svg%3E") 4 4, crosshair;
+}
+
+.shred {
+  position: absolute;
+  width: 8px;
+  background: var(--pink);
+  border: 1px solid var(--ink);
+  pointer-events: none;
+}
+
+.staple {
+  width: 10px;
+  height: 4px;
+  border-radius: 0;
+  background: linear-gradient(180deg, var(--bleached), var(--muted));
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--ink) 50%, transparent);
+}
+
+.xerox-label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.display-stamp {
+  font-family: var(--font-display), Impact, sans-serif;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 0.82;
+  text-transform: uppercase;
+}
+
+.tag-stamp {
+  font-family: var(--font-tag), Impact, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  line-height: 0.85;
+  text-transform: uppercase;
+  color: var(--ink);
+  -webkit-text-stroke: 1.5px var(--ink);
+  paint-order: stroke fill;
+  text-shadow:
+    4px 5px 0 var(--lime),
+    7px 9px 0 color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.marker-scribble {
+  font-family: var(--font-marker), cursive;
+  line-height: 1;
+}
+
+.sheet-graffiti {
+  background:
+    radial-gradient(ellipse 50% 40% at 18% 22%, color-mix(in srgb, var(--ink) 14%, transparent), transparent 70%),
+    radial-gradient(ellipse 40% 35% at 82% 70%, color-mix(in srgb, var(--lime) 22%, transparent), transparent 65%),
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--cream) 18%, transparent), transparent 28%),
+    var(--pink);
+  background-blend-mode: multiply, normal, normal, normal;
+}
+
+.spray-noise {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  mix-blend-mode: multiply;
+  background-image:
+    radial-gradient(circle at 20% 30%, var(--ink) 0.6px, transparent 0.7px),
+    radial-gradient(circle at 70% 55%, var(--ink) 0.5px, transparent 0.6px),
+    radial-gradient(circle at 40% 80%, var(--ink) 0.7px, transparent 0.8px);
+  background-size: 7px 7px, 5px 5px, 9px 9px;
+}
+
+.paint-drip {
+  position: absolute;
+  width: 10px;
+  border-radius: 0;
+  background: var(--ink);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.paint-drip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  width: 8px;
+  height: 12px;
+  transform: translateX(-50%);
+  border-radius: 0;
+  background: inherit;
+  clip-path: ellipse(50% 60% at 50% 40%);
+}
+
+.sticker-slap {
+  position: absolute;
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--ink) 40%, transparent);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.tag-ghost {
+  position: absolute;
+  font-family: var(--font-tag), Impact, sans-serif;
+  text-transform: uppercase;
+  opacity: 0.18;
+  color: var(--ink);
+  pointer-events: none;
+  user-select: none;
+  line-height: 0.85;
+}
+
+.stencil-label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  border: 2px dashed color-mix(in srgb, var(--ink) 55%, transparent);
+  padding: 0.2rem 0.45rem;
+  background: color-mix(in srgb, var(--cream) 35%, transparent);
+}
+
+.input-flyer {
+  width: 100%;
+  border: 2px solid var(--ink);
+  background: var(--cream);
+  color: var(--ink);
+  border-radius: 0;
+  padding: 0.65rem 0.75rem;
+  outline: none;
+  transition: background-color 0.15s var(--ease-rip);
+}
+
+.input-flyer:focus {
+  background: var(--white);
+  box-shadow: 3px 3px 0 var(--lime);
+}
+
+.btn-stamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition:
+    transform 0.12s var(--ease-rip),
+    box-shadow 0.12s var(--ease-rip),
+    filter 0.12s var(--ease-rip);
+}
+
+.btn-stamp:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.btn-stamp:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-pink {
+  background: var(--pink);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.btn-lime {
+  background: var(--lime);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.btn-ink {
+  background: var(--ink);
+  color: var(--cream);
+  box-shadow: 4px 4px 0 var(--pink);
+}
+
+.btn-ghost {
+  background: var(--cream);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
 }

@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# STAMP
 
-## Getting Started
+멀티체인 NFT · 멀티토큰 원클릭 민팅 사이트.
 
-First, run the development server:
+## 지원 체인
+
+| 계열 | 체인 |
+|------|------|
+| EVM | Ethereum, BNB, Polygon, Arbitrum, Avalanche, Scroll, Kaia, Silicon, ChainBounty*(L3)* |
+| Solana | Solana Mainnet |
+| TRON | TRON |
+| XRPL | XRP Ledger |
+
+> **ChainBounty**는 Arbitrum One 위 Orbit L3입니다 (`chainId` 51828). 가스 토큰은 BOUNTY이며 `https://rpc.chainbounty.io`로 민팅됩니다.
+
+## 토큰 유형
+
+| 체인 | NFT | 멀티토큰 |
+|------|-----|----------|
+| EVM | ERC-721 | ERC-1155 |
+| Solana | Metaplex-ready | SPL Edition |
+| TRON | TRC-721 | TRC-1155 |
+| XRPL | NFToken | MPT |
+
+## 시작하기
 
 ```bash
+npm install --legacy-peer-deps
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 환경 변수
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+cp .env.example .env.local
+```
 
-## Learn More
+| 키 | 설명 |
+|----|------|
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | [Reown Dashboard](https://dashboard.reown.com) Project ID (없으면 데모 ID 사용) |
+| `PINATA_JWT` | IPFS 업로드용 (없으면 data URI) |
 
-To learn more about Next.js, take a look at the following resources:
+## 지갑 (WalletConnect)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **EVM / Solana / TRON**: Reown AppKit (WalletConnect) 모달로 연결
+- **XRPL**: WalletConnect 미지원 → [GemWallet](https://gemwallet.app) 사용
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 민팅 방식
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **EVM**: ERC-721 / ERC-1155 컨트랙트 배포 후 민트
+- **Solana / TRON**: 온체인 메타데이터 기록 (수량 포함)
+- **XRPL**: `NFTokenMint` 또는 `MPTokenIssuanceCreate`
