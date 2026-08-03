@@ -4,7 +4,7 @@ import path from "path";
 import {
   extFromMime,
   getMediaStatus,
-  resolvePublicBase,
+  resolveFacingBase,
   s3Configured,
 } from "./config";
 import { putS3Objects } from "./s3";
@@ -22,24 +22,23 @@ export type StoredMediaResult = {
 };
 
 /**
- * Store image + ERC-721 style metadata JSON under a public HTTPS-friendly URL.
- * On-chain tokenURI points here — not to public IPFS gateways.
+ * Store on R2 (or local). tokenURI/image use app-domain proxy URLs when S3
+ * so wallets (Klip) never fetch r2.dev directly.
  */
 export async function storeNftMedia(params: {
   file: File;
   name: string;
   description: string;
-  /** browser origin fallback when env public base unset */
   requestOrigin?: string | null;
 }): Promise<StoredMediaResult> {
   const status = getMediaStatus(params.requestOrigin);
   if (!status.canUpload) {
     throw new Error(
-      "서버리스 환경에서는 S3/R2 설정이 필요합니다. S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, MEDIA_PUBLIC_BASE_URL을 설정하세요.",
+      "서버리스 환경에서는 S3/R2 설정이 필요합니다. S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT를 설정하세요.",
     );
   }
 
-  const publicBase = resolvePublicBase(params.requestOrigin);
+  const facing = resolveFacingBase(params.requestOrigin);
   const bytes = Buffer.from(await params.file.arrayBuffer());
   const mime = params.file.type || "image/png";
   const ext = extFromMime(mime);
@@ -57,14 +56,20 @@ export async function storeNftMedia(params: {
     const id = randomUUID().replace(/-/g, "").slice(0, 16);
     const imageKey = `n/${id}/image.${ext}`;
     const metaKey = `n/${id}/meta.json`;
-    const imageUrl = `${publicBase}/${imageKey}`;
+    // Wallet-facing HTTPS on app host (Vercel), not r2.dev
+    const imageUrl = `${facing}/api/media/o/${id}/image`;
+    const tokenURI = `${facing}/api/media/o/${id}`;
     const metaBody = {
       name: params.name,
       description: params.description,
       image: imageUrl,
       image_url: imageUrl,
-      external_url: publicBase,
-      properties: { image: imageUrl },
+      external_url: facing,
+      properties: {
+        image: imageUrl,
+        media_id: id,
+        image_ext: ext,
+      },
     };
     const metaBuf = Buffer.from(JSON.stringify(metaBody), "utf8");
     const usage = await assertAndAddDailyUsage(bytes.length + metaBuf.length);
@@ -81,13 +86,13 @@ export async function storeNftMedia(params: {
         contentType: "application/json",
       },
     ]);
-    const tokenURI = `${publicBase}/${metaKey}`;
+
     return {
       id,
       tokenURI,
       imageUrl,
       mode: "s3",
-      publicBase,
+      publicBase: facing,
       klipReady: status.klipReady,
       usage,
     };
@@ -100,8 +105,8 @@ export async function storeNftMedia(params: {
     name: params.name,
     description: params.description,
   });
-  const imageUrl = `${publicBase}/api/meta/${saved.id}/image`;
-  const tokenURI = `${publicBase}/api/meta/${saved.id}`;
+  const imageUrl = `${facing}/api/meta/${saved.id}/image`;
+  const tokenURI = `${facing}/api/meta/${saved.id}`;
 
   try {
     const mirror = path.join(process.cwd(), ".data", "public-mirror", saved.id);
@@ -125,7 +130,7 @@ export async function storeNftMedia(params: {
     tokenURI,
     imageUrl,
     mode: "local",
-    publicBase,
+    publicBase: facing,
     klipReady: status.klipReady,
     usage,
   };

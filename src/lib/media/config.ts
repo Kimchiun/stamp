@@ -1,18 +1,20 @@
 /**
  * Public media URLs for NFT metadata/images.
- * Prefer our own HTTPS origin/CDN — public IPFS gateways are often blocked by wallet apps.
+ * Storage: R2/S3. Wallet-facing tokenURI/image: app domain proxy
+ * (Klip Flutter often blocks pub-*.r2.dev / IPFS gateways).
  */
 
 export type MediaStatus = {
-  /** Can store uploads (local disk or object storage) */
   canUpload: boolean;
   /**
-   * tokenURI/image use a non-loopback HTTPS host wallets can fetch.
-   * false on localhost/http — Klip Flutter will not load images.
+   * Wallet-facing HTTPS host (app domain) is public non-loopback.
    */
   klipReady: boolean;
   mode: "s3" | "local";
+  /** Wallet-facing base (tokenURI / image in metadata) */
   publicBase: string;
+  /** Storage public base if set (R2.dev) — not used for on-chain URLs */
+  storageBase?: string;
   hint: string;
 };
 
@@ -49,17 +51,24 @@ export function analyzePublicUrl(url: string): {
 }
 
 /**
- * Resolve absolute public base for tokenURI / image fields.
- * Priority: MEDIA_PUBLIC_BASE_URL → NEXT_PUBLIC_APP_URL → request origin
+ * Wallet-facing base for tokenURI and metadata.image.
+ * Prefer NEXT_PUBLIC_APP_URL (Vercel) so host is not r2.dev / ipfs.io.
  */
-export function resolvePublicBase(requestOrigin?: string | null): string {
-  const env =
-    process.env.MEDIA_PUBLIC_BASE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-    "";
+export function resolveFacingBase(requestOrigin?: string | null): string {
+  const env = process.env.NEXT_PUBLIC_APP_URL?.trim() || "";
   if (env) return stripSlash(env);
   if (requestOrigin) return stripSlash(requestOrigin);
   return "http://localhost:3000";
+}
+
+/** @deprecated use resolveFacingBase — kept for call sites */
+export function resolvePublicBase(requestOrigin?: string | null): string {
+  return resolveFacingBase(requestOrigin);
+}
+
+export function resolveStorageBase(): string {
+  const env = process.env.MEDIA_PUBLIC_BASE_URL?.trim() || "";
+  return env ? stripSlash(env) : "";
 }
 
 export function s3Configured(): boolean {
@@ -67,41 +76,41 @@ export function s3Configured(): boolean {
     process.env.S3_BUCKET?.trim() &&
       process.env.S3_ACCESS_KEY_ID?.trim() &&
       process.env.S3_SECRET_ACCESS_KEY?.trim() &&
-      process.env.MEDIA_PUBLIC_BASE_URL?.trim(),
+      process.env.S3_ENDPOINT?.trim(),
   );
 }
 
 export function getMediaStatus(requestOrigin?: string | null): MediaStatus {
-  const publicBase = resolvePublicBase(requestOrigin);
+  const publicBase = resolveFacingBase(requestOrigin);
+  const storageBase = resolveStorageBase();
   const { okHttps, loopback } = analyzePublicUrl(publicBase);
   const mode = s3Configured() ? "s3" : "local";
   const klipReady = okHttps && !loopback;
-
-  // On Vercel-like serverless without S3, local disk is ephemeral — still "can upload" for one request but warn
   const vercelNoDisk = Boolean(process.env.VERCEL) && mode === "local";
 
   let hint: string;
   if (klipReady && mode === "s3") {
-    hint = `미디어 CDN/오브젝트 스토리지 활성 (${publicBase})`;
+    hint = `R2 저장 + 앱 도메인 메타 프록시 (${publicBase})`;
   } else if (klipReady && mode === "local") {
     hint = `앱 공개 HTTPS로 메타 제공 (${publicBase})`;
   } else if (loopback || !okHttps) {
     hint =
-      "공개 HTTPS 도메인이 필요합니다. MEDIA_PUBLIC_BASE_URL 또는 NEXT_PUBLIC_APP_URL을 https://… 로 설정하세요. (localhost·공개 IPFS 게이트웨이는 클립 플러터에서 차단·미표시될 수 있음)";
+      "NEXT_PUBLIC_APP_URL을 공개 https 배포 주소로 설정하세요. (클립은 localhost / r2.dev / 공개 IPFS 게이트웨이 이미지를 못 볼 수 있음)";
   } else {
     hint = "미디어 스토어를 확인하세요.";
   }
 
   if (vercelNoDisk) {
-    hint +=
-      " Vercel 등 서버리스에서는 S3/R2(S3_* + MEDIA_PUBLIC_BASE_URL) 설정을 권장합니다.";
+    hint += " Vercel에서는 S3/R2 설정을 권장합니다.";
   }
 
   return {
-    canUpload: mode === "s3" || !vercelNoDisk || process.env.NODE_ENV === "development",
+    canUpload:
+      mode === "s3" || !vercelNoDisk || process.env.NODE_ENV === "development",
     klipReady,
     mode,
     publicBase,
+    storageBase: storageBase || undefined,
     hint,
   };
 }
@@ -112,4 +121,12 @@ export function extFromMime(mime: string): string {
   if (mime === "image/gif") return "gif";
   if (mime === "image/webp") return "webp";
   return "bin";
+}
+
+export function mimeFromExt(ext: string): string {
+  if (ext === "png") return "image/png";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "gif") return "image/gif";
+  if (ext === "webp") return "image/webp";
+  return "application/octet-stream";
 }

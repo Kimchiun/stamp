@@ -2,6 +2,7 @@ import {
   HeadBucketCommand,
   PutObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   S3Client,
   type S3ClientConfig,
 } from "@aws-sdk/client-s3";
@@ -52,6 +53,26 @@ export async function putS3Objects(
   );
 }
 
+export async function getS3Object(
+  key: string,
+): Promise<{ body: Buffer; contentType: string } | null> {
+  const bucket = requireEnv("S3_BUCKET");
+  const s3 = createS3Client();
+  try {
+    const out = await s3.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+    );
+    const bytes = await out.Body?.transformToByteArray();
+    if (!bytes) return null;
+    return {
+      body: Buffer.from(bytes),
+      contentType: out.ContentType || "application/octet-stream",
+    };
+  } catch {
+    return null;
+  }
+}
+
 export type S3ProbeResult = {
   ok: boolean;
   step: string;
@@ -60,15 +81,17 @@ export type S3ProbeResult = {
   publicUrl?: string;
 };
 
-/**
- * Write a tiny object, optionally fetch via MEDIA_PUBLIC_BASE_URL, then delete.
- */
 export async function probeS3Media(): Promise<S3ProbeResult> {
   const bucket = requireEnv("S3_BUCKET");
-  const publicBase = requireEnv("MEDIA_PUBLIC_BASE_URL").replace(/\/$/, "");
+  const publicBase = (process.env.MEDIA_PUBLIC_BASE_URL || "")
+    .trim()
+    .replace(/\/$/, "");
   const s3 = createS3Client();
   const key = `n/_health/${Date.now()}.txt`;
-  const body = Buffer.from(`stamp-media-ok ${new Date().toISOString()}`, "utf8");
+  const body = Buffer.from(
+    `stamp-media-ok ${new Date().toISOString()}`,
+    "utf8",
+  );
 
   try {
     await s3.send(new HeadBucketCommand({ Bucket: bucket }));
@@ -98,9 +121,21 @@ export async function probeS3Media(): Promise<S3ProbeResult> {
       ok: false,
       step: "PutObject",
       message:
-        e instanceof Error
-          ? `업로드 실패: ${e.message}`
-          : "업로드 실패",
+        e instanceof Error ? `업로드 실패: ${e.message}` : "업로드 실패",
+    };
+  }
+
+  if (!publicBase) {
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    } catch {
+      /* */
+    }
+    return {
+      ok: true,
+      step: "done",
+      message: "S3/R2 쓰기 정상 (공개 base 없음 — 앱 프록시 사용)",
+      publicFetchOk: true,
     };
   }
 
@@ -117,7 +152,7 @@ export async function probeS3Media(): Promise<S3ProbeResult> {
     publicFetchOk = res.ok && text.includes("stamp-media-ok");
     fetchMsg = publicFetchOk
       ? "공개 URL GET 성공"
-      : `공개 URL 응답 ${res.status} (R2 Public access / Custom Domain 연결 확인)`;
+      : `공개 URL 응답 ${res.status} (R2 Public access 확인)`;
   } catch (e: unknown) {
     fetchMsg =
       e instanceof Error
@@ -128,7 +163,7 @@ export async function probeS3Media(): Promise<S3ProbeResult> {
   try {
     await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
   } catch {
-    /* leave orphan ok */
+    /* */
   }
 
   if (!publicFetchOk) {
