@@ -2,28 +2,30 @@ import type { SupportedChain } from "@/lib/chains";
 import { explorerTx } from "@/lib/chains";
 import type { MintInput, MintOutcome } from "./types";
 
-declare global {
-  interface Window {
-    tronWeb?: {
-      defaultAddress?: { base58?: string };
-      ready?: boolean;
-      fullNode?: { host?: string };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      [key: string]: any;
-    };
-    tronLink?: {
-      request: (args: { method: string }) => Promise<unknown>;
-    };
-  }
+type TronWindow = {
+  tronWeb?: {
+    defaultAddress?: { base58?: string };
+    ready?: boolean;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [key: string]: any;
+  };
+  tronLink?: {
+    request: (args: { method: string }) => Promise<unknown>;
+  };
+};
+
+function tronWin(): TronWindow {
+  return window as unknown as TronWindow;
 }
 
 export async function connectTronWallet(): Promise<string> {
-  if (!window.tronLink) {
+  const w = tronWin();
+  if (!w.tronLink) {
     throw new Error("TronLink를 설치하거나 WalletConnect로 연결해 주세요.");
   }
-  await window.tronLink.request({ method: "tron_requestAccounts" });
+  await w.tronLink.request({ method: "tron_requestAccounts" });
   await new Promise((r) => setTimeout(r, 400));
-  const addr = window.tronWeb?.defaultAddress?.base58;
+  const addr = w.tronWeb?.defaultAddress?.base58;
   if (!addr) throw new Error("Tron 지갑 주소를 가져오지 못했습니다.");
   return addr;
 }
@@ -34,7 +36,7 @@ export async function mintOnTron(
   ownerAddress: string,
 ): Promise<MintOutcome> {
   try {
-    const tronWeb = window.tronWeb;
+    const tronWeb = tronWin().tronWeb;
     if (!tronWeb?.defaultAddress?.base58) {
       return {
         success: false,
@@ -80,9 +82,11 @@ export async function mintOnTron(
     return {
       success: true,
       txHash,
-      amount: String(isMulti ? amount : 1),
-      kind: input.kind,
       explorerUrl: explorerTx(chain, txHash),
+      tokenURI: input.tokenURI,
+      imageUrl: input.imagePreview,
+      amount: isMulti ? String(amount) : "1",
+      kind: input.kind,
     };
   } catch (e: unknown) {
     return {
