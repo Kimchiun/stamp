@@ -20,6 +20,9 @@ type Props = {
   result?: MintResult | null;
   chain: SupportedChain;
   mintAmount?: number;
+  /** EVM NFT batch minting: confirmed batch txs so far */
+  batchProgress?: { done: number; total: number } | null;
+  batchSize?: number;
   kind?: "nft" | "multi";
 };
 
@@ -36,6 +39,8 @@ export function MintStatus({
   result,
   chain,
   mintAmount = 1,
+  batchProgress = null,
+  batchSize = 100,
   kind = "nft",
 }: Props) {
   return (
@@ -82,13 +87,20 @@ export function MintStatus({
               지갑 승인 —{" "}
               {kind === "multi"
                 ? `멀티토큰 ${mintAmount.toLocaleString()}개 민트`
-                : "NFT 1개 민트"}
+                : mintAmount > 1
+                  ? `NFT ${mintAmount.toLocaleString()}개 민트 (${Math.min(
+                      (batchProgress?.done ?? 0) + 1,
+                      Math.ceil(mintAmount / batchSize),
+                    )}/${Math.ceil(mintAmount / batchSize)}회차)`
+                  : "NFT 1개 민트"}
             </span>
           </div>
           <p className="mt-1.5 pl-8 text-xs text-[var(--ink)]/70">
             {kind === "multi"
               ? "공유 컬렉션에 수량 일괄 민트 1건입니다."
-              : "공유 STAMP 컬렉션에 토큰 1개 민트입니다."}
+              : mintAmount > 1
+                ? `공유 STAMP 컬렉션에 한 번에 최대 ${batchSize}개씩 나눠 민트합니다. 회차마다 지갑 승인이 필요합니다.`
+                : "공유 STAMP 컬렉션에 토큰 1개 민트입니다."}
           </p>
         </motion.div>
       )}

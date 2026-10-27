@@ -16,6 +16,7 @@ export type MintOptions = {
     request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
   } | null;
   onEvmStep?: (step: import("./evm").EvmMintStep) => void;
+  onEvmBatch?: (done: number, total: number) => void;
 };
 
 export async function connectWallet(chain: SupportedChain): Promise<string> {
@@ -52,6 +53,7 @@ export async function mintNft(
       return mintOnEvm(chain, input, address, {
         eip1193: options?.evmProvider,
         onStep: options?.onEvmStep,
+        onBatch: options?.onEvmBatch,
       });
     case "solana":
       return mintOnSolana(chain, input, address, options?.solanaProvider);
@@ -62,7 +64,7 @@ export async function mintNft(
   }
 }
 
-export { connectEvmWallet, mintOnEvm, estimateEvmMintFee, MAX_EVM_MULTI_AMOUNT } from "./evm";
+export { connectEvmWallet, mintOnEvm, estimateEvmMintFee, MAX_EVM_MULTI_AMOUNT, MAX_EVM_NFT_QUANTITY, EVM_NFT_BATCH_SIZE } from "./evm";
 export type { FeeEstimate, EvmMintStep } from "./evm";
 export { connectSolanaWallet, mintOnSolana } from "./solana";
 export { connectTronWallet, mintOnTron } from "./tron";

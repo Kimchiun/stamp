@@ -49,6 +49,7 @@ function compileFile(solFile, contractName, outName) {
 }
 
 compileFile("StampOpenNFT.sol", "StampOpenNFT", "StampOpenNFT.json");
+compileFile("StampEditionMinter.sol", "StampEditionMinter", "StampEditionMinter.json");
 compileFile("StampOpenMulti.sol", "StampOpenMulti", "StampOpenMulti.json");
 // Legacy
 compileFile("SimpleNFT.sol", "SimpleNFT", "SimpleNFT.json");

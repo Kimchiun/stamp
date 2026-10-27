@@ -9,13 +9,15 @@ export type MintInput = {
   tokenURI: string;
   /** Optional image preview URL for UI */
   imagePreview?: string;
-  /** ERC-1155 mint amount (ignored for NFT) */
+  /** ERC-1155 mint amount; for EVM NFT, number of ERC-721 tokens (batched) */
   amount?: number;
 };
 
 export type MintResult = {
   success: true;
   txHash: string;
+  /** All batch txs when an EVM NFT quantity > 1 was minted */
+  txHashes?: string[];
   contractAddress?: string;
   tokenId?: string;
   amount?: string;

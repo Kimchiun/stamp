@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Unplug, Wallet } from "lucide-react";
 import { CHAINS, type SupportedChain } from "@/lib/chains";
-import { mintNft, estimateEvmMintFee, type FeeEstimate, MAX_XRPL_EDITIONS } from "@/lib/adapters";
+import { mintNft, estimateEvmMintFee, type FeeEstimate, MAX_XRPL_EDITIONS, MAX_EVM_NFT_QUANTITY, EVM_NFT_BATCH_SIZE } from "@/lib/adapters";
 import { uploadMetadata, checkPublicUploads, type UploadStatus } from "@/lib/ipfs";
 import type { MintResult, TokenKind } from "@/lib/adapters/types";
 import { validateKlipFields } from "@/lib/klipFilters";
@@ -26,6 +26,8 @@ export function MintWizard() {
   const [symbol, setSymbol] = useState("STAMP");
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState(100);
+  const [nftQty, setNftQty] = useState(1);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<UploadStatus | null>(null);
@@ -65,6 +67,8 @@ export function MintWizard() {
       );
   }, []);
 
+  const evmNft = chain.family === "evm" && kind === "nft";
+  const qty = kind === "multi" ? amount : evmNft ? nftQty : 1;
   const lockSymbol = chain.family === "evm";
   const effectiveSymbol = lockSymbol ? "STAMP" : symbol;
 
@@ -174,7 +178,7 @@ export function MintWizard() {
           description: description.trim(),
           tokenURI: uploaded.tokenURI,
           imagePreview: uploaded.imagePreview,
-          amount: kind === "multi" ? amount : 1,
+          amount: qty,
         };
 
         // EVM: AppKit 네트워크 맞춘 뒤 수수료 추정 → 배포 → 민트
@@ -194,10 +198,12 @@ export function MintWizard() {
         }
 
         setStatus("minting");
+        setBatchProgress(null);
         const outcome = await mintNft(chain, mintInput, address, {
           solanaProvider: wallet.solanaProvider,
           evmProvider: wallet.evmProvider,
           onEvmStep: (step) => setStatus(step),
+          onEvmBatch: (done, total) => setBatchProgress({ done, total }),
         });
 
         if (!outcome.success) {
@@ -232,7 +238,9 @@ export function MintWizard() {
   const mintLabel =
     kind === "multi"
       ? `${chain.name}에서 ${amount.toLocaleString()}개 민트`
-      : `${chain.name}에서 NFT 민트`;
+      : qty > 1
+        ? `${chain.name}에서 NFT ${qty.toLocaleString()}개 민트`
+        : `${chain.name}에서 NFT 민트`;
 
   const connectLabel =
     chain.family === "xrpl"
@@ -386,12 +394,15 @@ export function MintWizard() {
             name={name}
             symbol={symbol}
             description={description}
-            amount={amount}
+            amount={evmNft ? nftQty : amount}
+            showQuantity={evmNft}
             lockSymbol={lockSymbol}
             maxAmount={
               chain.family === "xrpl" && kind === "multi"
                 ? MAX_XRPL_EDITIONS
-                : undefined
+                : evmNft
+                  ? MAX_EVM_NFT_QUANTITY
+                  : undefined
             }
             preview={preview}
             onChange={(field, value) => {
@@ -404,6 +415,10 @@ export function MintWizard() {
                 let next = Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
                 if (chain.family === "xrpl" && kind === "multi") {
                   next = Math.min(next, MAX_XRPL_EDITIONS);
+                }
+                if (evmNft) {
+                  setNftQty(Math.min(next, MAX_EVM_NFT_QUANTITY));
+                  return;
                 }
                 setAmount(next);
               }
@@ -498,7 +513,9 @@ export function MintWizard() {
             result={result}
             chain={chain}
             kind={kind}
-            mintAmount={amount}
+            mintAmount={qty}
+            batchProgress={batchProgress}
+            batchSize={EVM_NFT_BATCH_SIZE}
           />
         </div>
 
@@ -531,10 +548,14 @@ export function MintWizard() {
                 {kind === "multi" ? "ERC-1155" : "ERC-721"} 컬렉션 배포
               </li>
               <li>
-                민트 1회
+                {kind === "nft" && qty > 1
+                  ? `(체인당 최초) 배치 민터 배포 → 민트 ${Math.ceil(qty / EVM_NFT_BATCH_SIZE)}회 — NFT ${qty.toLocaleString()}개 (회당 최대 ${EVM_NFT_BATCH_SIZE}개, 회차마다 지갑 승인)`
+                  : "민트 1회"}
                 {kind === "multi"
                   ? ` — 수량 ${amount.toLocaleString()}개를 한 트랜잭션에 처리`
-                  : " — NFT 1개"}
+                  : qty > 1
+                    ? ""
+                    : " — NFT 1개"}
               </li>
             </ol>
             <p className="mt-2">

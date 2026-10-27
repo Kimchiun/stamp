@@ -20,6 +20,7 @@ import { explorerTx } from "@/lib/chains";
 import type { MintInput, MintOutcome } from "./types";
 import nftArtifact from "@/lib/contracts/StampOpenNFT.json";
 import multiArtifact from "@/lib/contracts/StampOpenMulti.json";
+import batchMinterArtifact from "@/lib/contracts/StampEditionMinter.json";
 import { connectEvmWallet, switchEvmChain } from "./evmInjected";
 import { wrapEip1193Provider, isUserCancelledError } from "@/lib/wallet/errors";
 import {
@@ -88,6 +89,8 @@ export type EvmMintStep =
 export type MintOnEvmOptions = {
   eip1193?: EvmBrowserProvider | null;
   onStep?: (step: EvmMintStep) => void;
+  /** Called after each batch tx is confirmed (NFT quantity > 1). */
+  onBatch?: (done: number, total: number) => void;
 };
 
 const MAX_ONCHAIN_URI_CHARS = 2_000;
@@ -520,6 +523,27 @@ async function sendLegacyWalletTx(args: {
 /** Fixed salts → same collection address per kind on every mint for a given chain. */
 const PLATFORM_SALT_NFT = id("STAMP_OPEN_NFT_V1");
 const PLATFORM_SALT_MULTI = id("STAMP_OPEN_MULTI_V1");
+const PLATFORM_SALT_BATCH = id("STAMP_EDITION_MINTER_V1");
+
+/** EVM NFT (ERC-721) quantity per order; minted in batches of EVM_NFT_BATCH_SIZE per tx. */
+export const MAX_EVM_NFT_QUANTITY = 1000;
+export const EVM_NFT_BATCH_SIZE = 50;
+
+function nftQuantity(input: MintInput): number {
+  if (input.kind !== "nft") return 1;
+  return Math.min(
+    MAX_EVM_NFT_QUANTITY,
+    Math.max(1, Math.floor(input.amount || 1)),
+  );
+}
+
+function batchSizes(total: number): number[] {
+  const sizes: number[] = [];
+  for (let left = total; left > 0; left -= EVM_NFT_BATCH_SIZE) {
+    sizes.push(Math.min(left, EVM_NFT_BATCH_SIZE));
+  }
+  return sizes;
+}
 
 /** EVM multi (ERC-1155) single-tx amount cap. */
 export const MAX_EVM_MULTI_AMOUNT = 1_000_000;
@@ -608,6 +632,19 @@ async function resolvePlatformCollection(args: {
   });
 }
 
+/** Helper that mints N ERC-721 into the shared STAMP collection in one tx. */
+async function resolveBatchMinter(args: {
+  publicRpc: JsonRpcProvider;
+  chainId: number;
+}): Promise<Create2Plan> {
+  return planCreate2Deploy({
+    publicRpc: args.publicRpc,
+    chainId: args.chainId,
+    artifact: batchMinterArtifact as Create2Plan["artifact"],
+    salt: PLATFORM_SALT_BATCH,
+  });
+}
+
 async function maybeDeployCreate2(args: {
   plan: Create2Plan;
   rawProvider: Eip1193Provider;
@@ -670,6 +707,8 @@ export async function estimateEvmMintFee(
     Math.max(1, Math.floor(input.amount || 1)),
   );
   const rpc = createPublicRpc(chain);
+  const qty = nftQuantity(input);
+  const batched = qty > 1;
 
   const platform = await resolvePlatformCollection({
     publicRpc: rpc,
@@ -688,6 +727,28 @@ export async function estimateEvmMintFee(
     } catch {
       deployGas = BigInt(3_500_000);
     }
+  }
+
+  if (batched) {
+    const minter = await resolveBatchMinter({
+      publicRpc: rpc,
+      chainId: chain.chainId,
+    });
+    if (minter.needsDeploy) deployGas += BigInt(1_000_000);
+    const txCount = batchSizes(qty).length;
+    const mintGas = BigInt(180_000) * BigInt(qty) + BigInt(60_000) * BigInt(txCount);
+    const totalGas = deployGas + mintGas;
+    const feeData = await rpc.getFeeData();
+    const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? BigInt(0);
+    return {
+      deployGas: deployGas.toString(),
+      mintGas: mintGas.toString(),
+      totalGas: totalGas.toString(),
+      gasPriceGwei: (Number(gasPrice) / 1e9).toFixed(4),
+      totalFee: formatEther(totalGas * gasPrice),
+      nativeSymbol: chain.nativeCurrency.symbol,
+      note: `NFT ${qty.toLocaleString()}개 — 지갑 승인 ${txCount}회(트랜잭션당 최대 ${EVM_NFT_BATCH_SIZE}개). 대략치입니다.`,
+    };
   }
 
   let mintGas = BigInt(isMulti ? 180_000 : 140_000);
@@ -743,6 +804,114 @@ function withGasBuffer(gas: bigint, fallback: bigint): bigint {
 }
 
 /**
+ * NFT quantity > 1: one batch-minter deploy (once per chain), then
+ * ceil(qty / EVM_NFT_BATCH_SIZE) sequential mint txs into the shared collection.
+ */
+async function mintNftBatches(args: {
+  chain: SupportedChain;
+  input: MintInput;
+  ownerAddress: string;
+  qty: number;
+  collection: string;
+  rawProvider: Eip1193Provider;
+  publicRpc: JsonRpcProvider;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  signer: any;
+  opts: MintOnEvmOptions;
+}): Promise<MintOutcome> {
+  const { chain, input, ownerAddress, qty, collection, rawProvider, publicRpc, opts } =
+    args;
+
+  const minter = await resolveBatchMinter({
+    publicRpc,
+    chainId: chain.chainId as number,
+  });
+  await maybeDeployCreate2({
+    plan: minter,
+    rawProvider,
+    publicRpc,
+    chain,
+    from: ownerAddress,
+    onStep: opts.onStep,
+  });
+
+  const iface = new Contract(
+    minter.predictedAddress,
+    batchMinterArtifact.abi,
+    args.signer,
+  ).interface;
+
+  const sizes = batchSizes(qty);
+  const hashes: string[] = [];
+  let minted = 0;
+  let firstTokenId: string | undefined;
+
+  for (let i = 0; i < sizes.length; i++) {
+    opts.onStep?.("mint_tokens");
+    const n = sizes[i];
+    const data = iface.encodeFunctionData("mintBatch", [
+      collection,
+      ownerAddress,
+      n,
+      input.tokenURI,
+    ]);
+    const gasFallback = BigInt(180_000) * BigInt(n) + BigInt(100_000);
+
+    try {
+      let gas: bigint;
+      try {
+        gas = await publicRpc.estimateGas({
+          from: ownerAddress,
+          to: minter.predictedAddress,
+          data,
+        });
+      } catch {
+        gas = gasFallback;
+      }
+      const sent = await sendLegacyWalletTx({
+        rawProvider,
+        publicRpc,
+        chain,
+        from: ownerAddress,
+        tx: { to: minter.predictedAddress, data },
+        gasLimit: withGasBuffer(gas, gasFallback),
+      });
+      hashes.push(sent.hash);
+      minted += n;
+      if (!firstTokenId) {
+        const receipt = await publicRpc.getTransactionReceipt(sent.hash);
+        firstTokenId = extractTokenIdFromReceipt(receipt, false);
+      }
+      opts.onBatch?.(i + 1, sizes.length);
+    } catch (e: unknown) {
+      if (minted === 0) {
+        if (isUserCancelledError(e)) return { success: false, error: "CANCELLED" };
+        return { success: false, error: formatEvmError(e) };
+      }
+      const reason = isUserCancelledError(e) ? "취소됨" : formatEvmError(e);
+      return {
+        success: false,
+        error: `${qty.toLocaleString()}개 중 ${minted.toLocaleString()}개까지 민트됐고 이후 실패했습니다(${reason}). 이미 민트된 ${minted.toLocaleString()}개는 지갑에 있으니 남은 수량만 다시 민트하세요.`,
+      };
+    }
+  }
+
+  const lastHash = hashes[hashes.length - 1];
+  return {
+    success: true,
+    txHash: lastHash,
+    txHashes: hashes,
+    contractAddress: collection,
+    tokenId: firstTokenId,
+    amount: String(qty),
+    kind: input.kind,
+    explorerUrl: explorerTx(chain, lastHash),
+    tokenURI: input.tokenURI,
+    imageUrl: input.imagePreview,
+  };
+}
+
+/**
  * EVM mint:
  * NFT → shared StampOpenNFT (ERC-721)
  * multi → shared StampOpenMulti (ERC-1155)
@@ -793,6 +962,7 @@ export async function mintOnEvm(
       MAX_EVM_MULTI_AMOUNT,
       Math.max(1, Math.floor(input.amount || 1)),
     );
+    const qty = nftQuantity(input);
     const publicRpc = createPublicRpc(chain);
 
     const platform = await resolvePlatformCollection({
@@ -822,6 +992,20 @@ export async function mintOnEvm(
       }
     } catch {
       /* */
+    }
+
+    if (qty > 1) {
+      return await mintNftBatches({
+        chain,
+        input,
+        ownerAddress,
+        qty,
+        collection: contractAddress,
+        rawProvider,
+        publicRpc,
+        signer,
+        opts,
+      });
     }
 
     opts.onStep?.("mint_tokens");
