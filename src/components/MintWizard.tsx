@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Unplug, Wallet } from "lucide-react";
 import { CHAINS, type SupportedChain } from "@/lib/chains";
-import { mintNft, estimateEvmMintFee, type FeeEstimate, MAX_XRPL_EDITIONS, MAX_EVM_NFT_QUANTITY, EVM_NFT_BATCH_SIZE } from "@/lib/adapters";
+import { mintNft, estimateEvmMintFee, listMyCollections, type UserCollection, type FeeEstimate, MAX_XRPL_EDITIONS, MAX_EVM_NFT_QUANTITY, EVM_NFT_BATCH_SIZE } from "@/lib/adapters";
 import { uploadMetadata, checkPublicUploads, type UploadStatus } from "@/lib/ipfs";
 import type { MintResult, TokenKind } from "@/lib/adapters/types";
 import { validateKlipFields } from "@/lib/klipFilters";
@@ -18,6 +18,7 @@ import { MintForm } from "./MintForm";
 import { MintStatus } from "./MintStatus";
 import { XrplTransferPanel } from "./XrplTransferPanel";
 import { FlyerSheet } from "./FlyerSheet";
+import { CollectionPicker, type CollectionMode } from "./CollectionPicker";
 
 export function MintWizard() {
   const [chain, setChain] = useState<SupportedChain>(CHAINS[0]);
@@ -27,6 +28,12 @@ export function MintWizard() {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState(100);
   const [nftQty, setNftQty] = useState(1);
+  const [collMode, setCollMode] = useState<CollectionMode>("stamp");
+  const [collName, setCollName] = useState("");
+  const [collSymbol, setCollSymbol] = useState("");
+  const [myCollections, setMyCollections] = useState<UserCollection[]>([]);
+  const [collLoading, setCollLoading] = useState(false);
+  const [collSelected, setCollSelected] = useState("");
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -37,6 +44,7 @@ export function MintWizard() {
     | "estimating"
     | "switch_network"
     | "deploy_contract"
+    | "create_collection"
     | "mint_tokens"
     | "minting"
     | "done"
@@ -69,22 +77,57 @@ export function MintWizard() {
 
   const evmNft = chain.family === "evm" && kind === "nft";
   const qty = kind === "multi" ? amount : evmNft ? nftQty : 1;
-  const lockSymbol = chain.family === "evm";
-  const effectiveSymbol = lockSymbol ? "STAMP" : symbol;
+  const userColl = evmNft && collMode !== "stamp";
+  const newColl = evmNft && collMode === "new";
+  const lockSymbol = chain.family === "evm" && !newColl;
+  const effectiveSymbol = newColl
+    ? collSymbol.trim()
+    : lockSymbol
+      ? "STAMP"
+      : symbol;
+
+  const collAddress = evmNft ? address : null;
+  useEffect(() => {
+    if (!collAddress) return;
+    let cancelled = false;
+    void (async () => {
+      setCollLoading(true);
+      const list = await listMyCollections(chain, collAddress);
+      if (cancelled) return;
+      setMyCollections(list);
+      setCollSelected((cur) =>
+        list.some((c) => c.address === cur) ? cur : (list[0]?.address ?? ""),
+      );
+      setCollLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chain, collAddress, result]);
 
   const filterHits = useMemo(
-    () =>
-      validateKlipFields({
+    () => [
+      ...validateKlipFields({
         name,
         symbol: effectiveSymbol,
         platformSymbol: lockSymbol,
       }),
-    [name, effectiveSymbol, lockSymbol],
+      ...(newColl && collName.trim()
+        ? validateKlipFields({
+            name: collName,
+            symbol: effectiveSymbol,
+            platformSymbol: lockSymbol,
+          }).filter((h) => h.field === "name")
+        : []),
+    ],
+    [name, effectiveSymbol, lockSymbol, newColl, collName],
   );
 
   const canMint = useMemo(() => {
     if (!address || !name || !effectiveSymbol || !file || flowBusy) return false;
     if (kind === "multi" && amount < 1) return false;
+    if (newColl && (!collName.trim() || !collSymbol.trim())) return false;
+    if (evmNft && collMode === "existing" && !collSelected) return false;
     if (uploadStatus && !uploadStatus.publicUploads) return false;
     if (filterHits.length > 0) return false;
     return true;
@@ -98,6 +141,12 @@ export function MintWizard() {
     amount,
     uploadStatus,
     filterHits.length,
+    newColl,
+    collName,
+    collSymbol,
+    evmNft,
+    collMode,
+    collSelected,
   ]);
 
   const walletLabel = useMemo(() => {
@@ -174,11 +223,18 @@ export function MintWizard() {
         const mintInput = {
           kind,
           name: name.trim(),
-          symbol: (lockSymbol ? "STAMP" : symbol.trim()) || "STAMP",
+          symbol: (newColl ? collSymbol.trim() : lockSymbol ? "STAMP" : symbol.trim()) || "STAMP",
           description: description.trim(),
           tokenURI: uploaded.tokenURI,
           imagePreview: uploaded.imagePreview,
           amount: qty,
+          collection: !evmNft
+            ? undefined
+            : collMode === "new"
+              ? { mode: "new" as const, name: collName.trim(), symbol: collSymbol.trim() }
+              : collMode === "existing"
+                ? { mode: "existing" as const, address: collSelected }
+                : { mode: "stamp" as const },
         };
 
         // EVM: AppKit 네트워크 맞춘 뒤 수수료 추정 → 배포 → 민트
@@ -259,7 +315,11 @@ export function MintWizard() {
         : status === "switch_network"
           ? "네트워크 전환 승인 대기"
           : status === "deploy_contract"
-            ? "공유 STAMP 컬렉션 배포 승인 대기 (체인 최초 1회)"
+            ? userColl
+              ? "컬렉션 팩토리 배포 승인 대기 (체인 최초 1회)"
+              : "공유 STAMP 컬렉션 배포 승인 대기 (체인 최초 1회)"
+            : status === "create_collection"
+              ? "내 컬렉션 생성 승인 대기"
             : status === "mint_tokens" || status === "minting"
               ? "민트 승인 대기"
               : null;
@@ -389,6 +449,25 @@ export function MintWizard() {
         title={`3. ${kind === "multi" ? "에디션" : "작품"}`}
       >
         <div className={flowBusy ? "pointer-events-none opacity-50" : undefined}>
+          {evmNft && (
+            <CollectionPicker
+              mode={collMode}
+              onMode={(m) => {
+                if (flowBusy) return;
+                setCollMode(m);
+                setFee(null);
+              }}
+              name={collName}
+              symbol={collSymbol}
+              onName={setCollName}
+              onSymbol={setCollSymbol}
+              collections={myCollections}
+              loading={collLoading}
+              connected={Boolean(address)}
+              selected={collSelected}
+              onSelect={setCollSelected}
+            />
+          )}
           <MintForm
             kind={kind}
             name={name}
@@ -396,6 +475,7 @@ export function MintWizard() {
             description={description}
             amount={evmNft ? nftQty : amount}
             showQuantity={evmNft}
+            hideSymbol={userColl}
             lockSymbol={lockSymbol}
             maxAmount={
               chain.family === "xrpl" && kind === "multi"
@@ -516,6 +596,7 @@ export function MintWizard() {
             mintAmount={qty}
             batchProgress={batchProgress}
             batchSize={EVM_NFT_BATCH_SIZE}
+            userCollection={userColl}
           />
         </div>
 
@@ -539,8 +620,34 @@ export function MintWizard() {
         {chain.family === "evm" && (
           <div className="mt-4 border-2 border-dashed border-[var(--ink)] px-4 py-3 text-xs leading-relaxed text-[var(--ink)]/75">
             <p className="font-bold text-[var(--ink)]">
-              EVM · 공유 STAMP 컬렉션
+              {userColl ? "EVM · 내 컬렉션" : "EVM · 공유 STAMP 컬렉션"}
             </p>
+            {userColl ? (
+              <>
+                <ol className="mt-2 list-decimal space-y-1 pl-4">
+                  <li>네트워크 전환 (이미 맞으면 생략)</li>
+                  {newColl && (
+                    <>
+                      <li>(체인당 최초) 컬렉션 팩토리 배포</li>
+                      <li>컬렉션 생성 — {collName.trim() || "이름"} ({collSymbol.trim() || "심볼"})</li>
+                    </>
+                  )}
+                  <li>
+                    민트 {Math.ceil(qty / EVM_NFT_BATCH_SIZE)}회 — NFT {qty.toLocaleString()}개
+                    {qty > EVM_NFT_BATCH_SIZE
+                      ? ` (회당 최대 ${EVM_NFT_BATCH_SIZE}개, 회차마다 지갑 승인)`
+                      : ""}
+                  </li>
+                </ol>
+                <p className="mt-2">
+                  컬렉션은 만든 지갑 소유이며 소유자만 민트할 수 있습니다. 온체인
+                  name/symbol은 입력한 값이고 생성 후 바꿀 수 없습니다. 작품 이름·이미지는
+                  앱 도메인 메타 URL에 들어갑니다. 클립 갤러리 노출은 컬렉션 주소를
+                  클립에 등록해야 할 수 있습니다.
+                </p>
+              </>
+            ) : (
+              <>
             <ol className="mt-2 list-decimal space-y-1 pl-4">
               <li>네트워크 전환 (이미 맞으면 생략)</li>
               <li>
@@ -567,6 +674,8 @@ export function MintWizard() {
               참고: 일부 지갑(클립 등)은 미등록 ERC-1155를 제한 표시할 수 있습니다.
               표준 규격은 ERC-1155 그대로입니다.
             </p>
+              </>
+            )}
             <p className="mt-2 text-[var(--ink)]">
               클립 갤러리 노출은 해당 컬렉션 주소를 클립에 등록해야 할 수 있습니다.
               등록 전에도 구조상 “민트마다 새 컨트랙트” 문제는 없습니다. 지갑

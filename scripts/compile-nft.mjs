@@ -11,6 +11,8 @@ function findImports(importPath) {
     const full = path.join(root, "node_modules", importPath);
     return { contents: fs.readFileSync(full, "utf8") };
   }
+  const local = path.join(root, "contracts", importPath.replace(/^\.\//, ""));
+  if (fs.existsSync(local)) return { contents: fs.readFileSync(local, "utf8") };
   return { error: "File not found: " + importPath };
 }
 
@@ -50,6 +52,8 @@ function compileFile(solFile, contractName, outName) {
 
 compileFile("StampOpenNFT.sol", "StampOpenNFT", "StampOpenNFT.json");
 compileFile("StampEditionMinter.sol", "StampEditionMinter", "StampEditionMinter.json");
+compileFile("StampCollectionFactory.sol", "StampCollectionFactory", "StampCollectionFactory.json");
+compileFile("StampCollection.sol", "StampCollection", "StampCollection.json");
 compileFile("StampOpenMulti.sol", "StampOpenMulti", "StampOpenMulti.json");
 // Legacy
 compileFile("SimpleNFT.sol", "SimpleNFT", "SimpleNFT.json");

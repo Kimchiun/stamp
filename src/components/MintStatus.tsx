@@ -12,6 +12,7 @@ type Props = {
     | "estimating"
     | "switch_network"
     | "deploy_contract"
+    | "create_collection"
     | "mint_tokens"
     | "minting"
     | "done"
@@ -23,6 +24,8 @@ type Props = {
   /** EVM NFT batch minting: confirmed batch txs so far */
   batchProgress?: { done: number; total: number } | null;
   batchSize?: number;
+  /** EVM NFT into a user-created collection (factory deploy copy differs) */
+  userCollection?: boolean;
   kind?: "nft" | "multi";
 };
 
@@ -41,6 +44,7 @@ export function MintStatus({
   mintAmount = 1,
   batchProgress = null,
   batchSize = 100,
+  userCollection = false,
   kind = "nft",
 }: Props) {
   return (
@@ -68,13 +72,27 @@ export function MintStatus({
           <div className="flex items-center gap-3">
             <Loader2 className="animate-spin" size={18} />
             <span className="font-bold">
-              지갑 승인 — 공유 STAMP{" "}
-              {kind === "multi" ? "ERC-1155" : "ERC-721"} 컬렉션 배포 (체인 최초)
+              {userCollection
+                ? "지갑 승인 — 컬렉션 팩토리 배포 (체인 최초)"
+                : `지갑 승인 — 공유 STAMP ${kind === "multi" ? "ERC-1155" : "ERC-721"} 컬렉션 배포 (체인 최초)`}
             </span>
           </div>
           <p className="mt-1.5 pl-8 text-xs text-[var(--ink)]/70">
-            이 체인에 STAMP 컬렉션이 아직 없어 한 번 배포합니다. 이후 민트는 같은
-            주소로만 갑니다.{" "}
+            {userCollection
+              ? "이 체인에 컬렉션 팩토리가 아직 없어 한 번 배포합니다. 이후에는 컬렉션 생성만 합니다."
+              : "이 체인에 STAMP 컬렉션이 아직 없어 한 번 배포합니다. 이후 민트는 같은 주소로만 갑니다."}{" "}
+            <span className="font-bold">클립/지갑 앱을 열어 승인해 주세요.</span>
+          </p>
+        </motion.div>
+      )}
+      {status === "create_collection" && (
+        <motion.div key="create" {...fade} className="border-2 border-[var(--ink)] bg-[var(--lime)] px-4 py-3 text-sm text-[var(--ink)]">
+          <div className="flex items-center gap-3">
+            <Loader2 className="animate-spin" size={18} />
+            <span className="font-bold">지갑 승인 — 내 컬렉션 생성</span>
+          </div>
+          <p className="mt-1.5 pl-8 text-xs text-[var(--ink)]/70">
+            입력한 이름·심볼로 컬렉션을 만듭니다. 이후 민트는 이 컬렉션에 쌓입니다.{" "}
             <span className="font-bold">클립/지갑 앱을 열어 승인해 주세요.</span>
           </p>
         </motion.div>
@@ -169,6 +187,15 @@ export function MintStatus({
                   {result.kind === "multi"
                     ? "멀티토큰 · ERC-1155"
                     : "NFT · ERC-721"}
+                </dd>
+              </div>
+            )}
+            {result.collectionName && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-[var(--ink)]/55">컬렉션</dt>
+                <dd className="font-bold">
+                  {result.collectionName}
+                  {result.collectionSymbol ? ` (${result.collectionSymbol})` : ""}
                 </dd>
               </div>
             )}

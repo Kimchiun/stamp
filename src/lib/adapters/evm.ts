@@ -9,6 +9,7 @@ import {
   getCreate2Address,
   hexlify,
   id,
+  Interface,
   keccak256,
   toQuantity,
   type Eip1193Provider,
@@ -17,10 +18,12 @@ import {
 } from "ethers";
 import type { SupportedChain } from "@/lib/chains";
 import { explorerTx } from "@/lib/chains";
-import type { MintInput, MintOutcome } from "./types";
+import type { EvmCollectionChoice, MintInput, MintOutcome } from "./types";
 import nftArtifact from "@/lib/contracts/StampOpenNFT.json";
 import multiArtifact from "@/lib/contracts/StampOpenMulti.json";
 import batchMinterArtifact from "@/lib/contracts/StampEditionMinter.json";
+import collectionFactoryArtifact from "@/lib/contracts/StampCollectionFactory.json";
+import collectionArtifact from "@/lib/contracts/StampCollection.json";
 import { connectEvmWallet, switchEvmChain } from "./evmInjected";
 import { wrapEip1193Provider, isUserCancelledError } from "@/lib/wallet/errors";
 import {
@@ -84,6 +87,7 @@ export type FeeEstimate = {
 export type EvmMintStep =
   | "switch_network"
   | "deploy_contract"
+  | "create_collection"
   | "mint_tokens";
 
 export type MintOnEvmOptions = {
@@ -524,6 +528,7 @@ async function sendLegacyWalletTx(args: {
 const PLATFORM_SALT_NFT = id("STAMP_OPEN_NFT_V1");
 const PLATFORM_SALT_MULTI = id("STAMP_OPEN_MULTI_V1");
 const PLATFORM_SALT_BATCH = id("STAMP_EDITION_MINTER_V1");
+const PLATFORM_SALT_FACTORY = id("STAMP_COLLECTION_FACTORY_V1");
 
 /** EVM NFT (ERC-721) quantity per order; minted in batches of EVM_NFT_BATCH_SIZE per tx. */
 export const MAX_EVM_NFT_QUANTITY = 1000;
@@ -645,6 +650,58 @@ async function resolveBatchMinter(args: {
   });
 }
 
+/** Factory that creates per-user ERC-721 collections (name/symbol chosen by user). */
+async function resolveCollectionFactory(args: {
+  publicRpc: JsonRpcProvider;
+  chainId: number;
+}): Promise<Create2Plan> {
+  return planCreate2Deploy({
+    publicRpc: args.publicRpc,
+    chainId: args.chainId,
+    artifact: collectionFactoryArtifact as Create2Plan["artifact"],
+    salt: PLATFORM_SALT_FACTORY,
+  });
+}
+
+export type UserCollection = { address: string; name: string; symbol: string };
+
+/** Collections the wallet created via the factory (public RPC only, no popup). */
+export async function listMyCollections(
+  chain: SupportedChain,
+  ownerAddress: string,
+): Promise<UserCollection[]> {
+  try {
+    if (!chain.chainId || !chain.rpcUrls[0]) return [];
+    const rpc = createPublicRpc(chain);
+    const factory = await resolveCollectionFactory({
+      publicRpc: rpc,
+      chainId: chain.chainId,
+    });
+    if (factory.needsDeploy) return [];
+    const f = new Contract(
+      factory.predictedAddress,
+      collectionFactoryArtifact.abi,
+      rpc,
+    );
+    const addrs: string[] = await f.collectionsOf(ownerAddress);
+    return await Promise.all(
+      addrs.map(async (address) => {
+        const c = new Contract(address, collectionArtifact.abi, rpc);
+        const [name, symbol] = await Promise.all([c.name(), c.symbol()]);
+        return { address, name: String(name), symbol: String(symbol) };
+      }),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function isUserCollection(
+  c: EvmCollectionChoice | undefined,
+): c is Exclude<EvmCollectionChoice, { mode: "stamp" }> {
+  return Boolean(c && c.mode !== "stamp");
+}
+
 async function maybeDeployCreate2(args: {
   plan: Create2Plan;
   rawProvider: Eip1193Provider;
@@ -709,6 +766,39 @@ export async function estimateEvmMintFee(
   const rpc = createPublicRpc(chain);
   const qty = nftQuantity(input);
   const batched = qty > 1;
+  const estChoice = input.kind === "nft" ? input.collection : undefined;
+
+  if (isUserCollection(estChoice)) {
+    const factory = await resolveCollectionFactory({
+      publicRpc: rpc,
+      chainId: chain.chainId,
+    });
+    let deployGas = BigInt(0);
+    if (estChoice.mode === "new") {
+      if (factory.needsDeploy) deployGas += BigInt(2_500_000);
+      deployGas += BigInt(260_000);
+    }
+    const txCount = batchSizes(qty).length;
+    const mintGas = BigInt(160_000) * BigInt(qty) + BigInt(60_000) * BigInt(txCount);
+    const totalGas = deployGas + mintGas;
+    const feeData = await rpc.getFeeData();
+    const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? BigInt(0);
+    return {
+      deployGas: deployGas.toString(),
+      mintGas: mintGas.toString(),
+      totalGas: totalGas.toString(),
+      gasPriceGwei: (Number(gasPrice) / 1e9).toFixed(4),
+      totalFee: formatEther(totalGas * gasPrice),
+      nativeSymbol: chain.nativeCurrency.symbol,
+      note:
+        (estChoice.mode === "new"
+          ? factory.needsDeploy
+            ? "컬렉션 팩토리 첫 배포 + 새 컬렉션 생성 + "
+            : "새 컬렉션 생성 + "
+          : "내 컬렉션에 ") +
+        `NFT ${qty.toLocaleString()}개 민트 — 지갑 승인 ${txCount}회 이상. 대략치입니다.`,
+    };
+  }
 
   const platform = await resolvePlatformCollection({
     publicRpc: rpc,
@@ -803,9 +893,82 @@ function withGasBuffer(gas: bigint, fallback: bigint): bigint {
   return (base * BigInt(130)) / BigInt(100);
 }
 
+type BatchRun = {
+  hashes: string[];
+  minted: number;
+  firstTokenId?: string;
+  error?: unknown;
+};
+
+/** Sequential wallet txs; stops at the first failure and reports how many tokens landed. */
+async function runMintBatches(args: {
+  chain: SupportedChain;
+  publicRpc: JsonRpcProvider;
+  rawProvider: Eip1193Provider;
+  from: string;
+  to: string;
+  sizes: number[];
+  encode: (n: number) => string;
+  opts: MintOnEvmOptions;
+}): Promise<BatchRun> {
+  const hashes: string[] = [];
+  let minted = 0;
+  let firstTokenId: string | undefined;
+
+  for (let i = 0; i < args.sizes.length; i++) {
+    args.opts.onStep?.("mint_tokens");
+    const n = args.sizes[i];
+    const data = args.encode(n);
+    const gasFallback = BigInt(180_000) * BigInt(n) + BigInt(100_000);
+    try {
+      let gas: bigint;
+      try {
+        gas = await args.publicRpc.estimateGas({
+          from: args.from,
+          to: args.to,
+          data,
+        });
+      } catch {
+        gas = gasFallback;
+      }
+      const sent = await sendLegacyWalletTx({
+        rawProvider: args.rawProvider,
+        publicRpc: args.publicRpc,
+        chain: args.chain,
+        from: args.from,
+        tx: { to: args.to, data },
+        gasLimit: withGasBuffer(gas, gasFallback),
+      });
+      hashes.push(sent.hash);
+      minted += n;
+      if (!firstTokenId) {
+        const receipt = await args.publicRpc.getTransactionReceipt(sent.hash);
+        firstTokenId = extractTokenIdFromReceipt(receipt, false);
+      }
+      args.opts.onBatch?.(i + 1, args.sizes.length);
+    } catch (error: unknown) {
+      return { hashes, minted, firstTokenId, error };
+    }
+  }
+  return { hashes, minted, firstTokenId };
+}
+
+function batchFailure(qty: number, run: BatchRun, hint = ""): MintOutcome {
+  const e = run.error;
+  if (run.minted === 0) {
+    if (isUserCancelledError(e)) return { success: false, error: "CANCELLED" };
+    return { success: false, error: formatEvmError(e) + hint };
+  }
+  const reason = isUserCancelledError(e) ? "취소됨" : formatEvmError(e);
+  return {
+    success: false,
+    error: `${qty.toLocaleString()}개 중 ${run.minted.toLocaleString()}개까지 민트됐고 이후 실패했습니다(${reason}). 이미 민트된 ${run.minted.toLocaleString()}개는 지갑에 있으니 남은 수량만 다시 민트하세요.${hint}`,
+  };
+}
+
 /**
- * NFT quantity > 1: one batch-minter deploy (once per chain), then
- * ceil(qty / EVM_NFT_BATCH_SIZE) sequential mint txs into the shared collection.
+ * NFT quantity > 1 on the shared STAMP collection: one batch-minter deploy
+ * (once per chain), then ceil(qty / EVM_NFT_BATCH_SIZE) sequential mint txs.
  */
 async function mintNftBatches(args: {
   chain: SupportedChain;
@@ -815,8 +978,6 @@ async function mintNftBatches(args: {
   collection: string;
   rawProvider: Eip1193Provider;
   publicRpc: JsonRpcProvider;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  signer: any;
   opts: MintOnEvmOptions;
 }): Promise<MintOutcome> {
   const { chain, input, ownerAddress, qty, collection, rawProvider, publicRpc, opts } =
@@ -835,74 +996,174 @@ async function mintNftBatches(args: {
     onStep: opts.onStep,
   });
 
-  const iface = new Contract(
-    minter.predictedAddress,
-    batchMinterArtifact.abi,
-    args.signer,
-  ).interface;
+  const iface = new Interface(batchMinterArtifact.abi);
+  const run = await runMintBatches({
+    chain,
+    publicRpc,
+    rawProvider,
+    from: ownerAddress,
+    to: minter.predictedAddress,
+    sizes: batchSizes(qty),
+    opts,
+    encode: (n) =>
+      iface.encodeFunctionData("mintBatch", [
+        collection,
+        ownerAddress,
+        n,
+        input.tokenURI,
+      ]),
+  });
+  if (run.error) return batchFailure(qty, run);
 
-  const sizes = batchSizes(qty);
-  const hashes: string[] = [];
-  let minted = 0;
-  let firstTokenId: string | undefined;
+  const lastHash = run.hashes[run.hashes.length - 1];
+  return {
+    success: true,
+    txHash: lastHash,
+    txHashes: run.hashes,
+    contractAddress: collection,
+    tokenId: run.firstTokenId,
+    amount: String(qty),
+    kind: input.kind,
+    explorerUrl: explorerTx(chain, lastHash),
+    tokenURI: input.tokenURI,
+    imageUrl: input.imagePreview,
+  };
+}
 
-  for (let i = 0; i < sizes.length; i++) {
-    opts.onStep?.("mint_tokens");
-    const n = sizes[i];
-    const data = iface.encodeFunctionData("mintBatch", [
-      collection,
-      ownerAddress,
-      n,
-      input.tokenURI,
+/**
+ * User-owned collection: (new) create via factory, then owner-only mintBatch in
+ * ceil(qty / EVM_NFT_BATCH_SIZE) txs. Works for qty = 1 too.
+ */
+async function mintIntoUserCollection(args: {
+  chain: SupportedChain;
+  input: MintInput;
+  choice: Exclude<EvmCollectionChoice, { mode: "stamp" }>;
+  ownerAddress: string;
+  qty: number;
+  rawProvider: Eip1193Provider;
+  publicRpc: JsonRpcProvider;
+  opts: MintOnEvmOptions;
+}): Promise<MintOutcome> {
+  const { chain, input, choice, ownerAddress, qty, rawProvider, publicRpc, opts } =
+    args;
+  const chainId = chain.chainId as number;
+
+  let collection: string;
+  let collectionName: string;
+  let collectionSymbol: string;
+
+  if (choice.mode === "new") {
+    const factory = await resolveCollectionFactory({ publicRpc, chainId });
+    await maybeDeployCreate2({
+      plan: factory,
+      rawProvider,
+      publicRpc,
+      chain,
+      from: ownerAddress,
+      onStep: opts.onStep,
+    });
+
+    const fIface = new Interface(collectionFactoryArtifact.abi);
+    const data = fIface.encodeFunctionData("createCollection", [
+      choice.name.trim(),
+      choice.symbol.trim(),
     ]);
-    const gasFallback = BigInt(180_000) * BigInt(n) + BigInt(100_000);
-
+    let gas: bigint;
     try {
-      let gas: bigint;
-      try {
-        gas = await publicRpc.estimateGas({
-          from: ownerAddress,
-          to: minter.predictedAddress,
-          data,
-        });
-      } catch {
-        gas = gasFallback;
-      }
-      const sent = await sendLegacyWalletTx({
-        rawProvider,
-        publicRpc,
-        chain,
+      gas = await publicRpc.estimateGas({
         from: ownerAddress,
-        tx: { to: minter.predictedAddress, data },
-        gasLimit: withGasBuffer(gas, gasFallback),
+        to: factory.predictedAddress,
+        data,
       });
-      hashes.push(sent.hash);
-      minted += n;
-      if (!firstTokenId) {
-        const receipt = await publicRpc.getTransactionReceipt(sent.hash);
-        firstTokenId = extractTokenIdFromReceipt(receipt, false);
+    } catch {
+      gas = BigInt(400_000);
+    }
+
+    opts.onStep?.("create_collection");
+    const created = await sendLegacyWalletTx({
+      rawProvider,
+      publicRpc,
+      chain,
+      from: ownerAddress,
+      tx: { to: factory.predictedAddress, data },
+      gasLimit: withGasBuffer(gas, BigInt(400_000)),
+    });
+
+    const receipt = await publicRpc.getTransactionReceipt(created.hash);
+    let found: string | undefined;
+    for (const log of receipt?.logs || []) {
+      if (getAddress(log.address) !== getAddress(factory.predictedAddress)) continue;
+      try {
+        const parsed = fIface.parseLog(log);
+        if (parsed?.name === "CollectionCreated") {
+          found = getAddress(parsed.args.collection as string);
+          break;
+        }
+      } catch {
+        /* not our event */
       }
-      opts.onBatch?.(i + 1, sizes.length);
-    } catch (e: unknown) {
-      if (minted === 0) {
-        if (isUserCancelledError(e)) return { success: false, error: "CANCELLED" };
-        return { success: false, error: formatEvmError(e) };
-      }
-      const reason = isUserCancelledError(e) ? "취소됨" : formatEvmError(e);
+    }
+    if (!found) {
       return {
         success: false,
-        error: `${qty.toLocaleString()}개 중 ${minted.toLocaleString()}개까지 민트됐고 이후 실패했습니다(${reason}). 이미 민트된 ${minted.toLocaleString()}개는 지갑에 있으니 남은 수량만 다시 민트하세요.`,
+        error: `컬렉션 생성 트랜잭션은 보냈지만 주소를 확인하지 못했습니다. 잠시 후 '내 컬렉션'에서 확인하세요. (tx ${created.hash})`,
+      };
+    }
+    collection = found;
+    collectionName = choice.name.trim();
+    collectionSymbol = choice.symbol.trim();
+  } else {
+    collection = getAddress(choice.address);
+    const c = new Contract(collection, collectionArtifact.abi, publicRpc);
+    try {
+      const [owner, name, symbol] = await Promise.all([
+        c.owner(),
+        c.name(),
+        c.symbol(),
+      ]);
+      if (getAddress(owner as string) !== getAddress(ownerAddress)) {
+        return {
+          success: false,
+          error: "이 컬렉션의 소유자가 아니어서 민트할 수 없습니다.",
+        };
+      }
+      collectionName = String(name);
+      collectionSymbol = String(symbol);
+    } catch {
+      return {
+        success: false,
+        error: "STAMP 컬렉션 컨트랙트를 확인하지 못했습니다. 주소를 확인하세요.",
       };
     }
   }
 
-  const lastHash = hashes[hashes.length - 1];
+  const iface = new Interface(collectionArtifact.abi);
+  const run = await runMintBatches({
+    chain,
+    publicRpc,
+    rawProvider,
+    from: ownerAddress,
+    to: collection,
+    sizes: batchSizes(qty),
+    opts,
+    encode: (n) =>
+      iface.encodeFunctionData("mintBatch", [ownerAddress, n, input.tokenURI]),
+  });
+  const hint =
+    choice.mode === "new"
+      ? ` 컬렉션(${collection})은 이미 만들어졌으니 '내 컬렉션'에서 선택해 다시 민트하세요.`
+      : "";
+  if (run.error) return batchFailure(qty, run, hint);
+
+  const lastHash = run.hashes[run.hashes.length - 1];
   return {
     success: true,
     txHash: lastHash,
-    txHashes: hashes,
+    txHashes: run.hashes,
     contractAddress: collection,
-    tokenId: firstTokenId,
+    collectionName,
+    collectionSymbol,
+    tokenId: run.firstTokenId,
     amount: String(qty),
     kind: input.kind,
     explorerUrl: explorerTx(chain, lastHash),
@@ -928,13 +1189,29 @@ export async function mintOnEvm(
       : (options as MintOnEvmOptions | undefined) || {};
 
   try {
-    const klipHits = validateKlipFields({
-      name: input.name,
-      symbol: PLATFORM_COLLECTION_SYMBOL,
-      platformSymbol: true,
-    });
+    const userChoice = input.kind === "nft" ? input.collection : undefined;
+    const newCollection = userChoice?.mode === "new" ? userChoice : null;
+    const klipHits = [
+      ...validateKlipFields({
+        name: input.name,
+        symbol: newCollection ? newCollection.symbol : PLATFORM_COLLECTION_SYMBOL,
+        platformSymbol: !newCollection,
+      }),
+      ...(newCollection
+        ? validateKlipFields({
+            name: newCollection.name,
+            symbol: newCollection.symbol,
+          }).filter((h) => h.field === "name")
+        : []),
+    ];
     if (klipHits.length > 0) {
       return { success: false, error: klipHits.map((h) => h.reason).join(" ") };
+    }
+    if (
+      newCollection &&
+      (!newCollection.name.trim() || !newCollection.symbol.trim())
+    ) {
+      return { success: false, error: "컬렉션 이름과 심볼을 입력하세요." };
     }
 
     assertUriFitForChain(input.tokenURI);
@@ -964,6 +1241,19 @@ export async function mintOnEvm(
     );
     const qty = nftQuantity(input);
     const publicRpc = createPublicRpc(chain);
+
+    if (isUserCollection(userChoice)) {
+      return await mintIntoUserCollection({
+        chain,
+        input,
+        choice: userChoice,
+        ownerAddress,
+        qty,
+        rawProvider,
+        publicRpc,
+        opts,
+      });
+    }
 
     const platform = await resolvePlatformCollection({
       publicRpc,
@@ -1003,7 +1293,6 @@ export async function mintOnEvm(
         collection: contractAddress,
         rawProvider,
         publicRpc,
-        signer,
         opts,
       });
     }

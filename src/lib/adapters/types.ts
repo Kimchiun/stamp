@@ -1,5 +1,11 @@
 export type TokenKind = "nft" | "multi";
 
+/** EVM NFT only: where to mint. Default (undefined) = shared STAMP collection. */
+export type EvmCollectionChoice =
+  | { mode: "stamp" }
+  | { mode: "new"; name: string; symbol: string }
+  | { mode: "existing"; address: string };
+
 export type MintInput = {
   kind: TokenKind;
   name: string;
@@ -11,6 +17,8 @@ export type MintInput = {
   imagePreview?: string;
   /** ERC-1155 mint amount; for EVM NFT, number of ERC-721 tokens (batched) */
   amount?: number;
+  /** EVM NFT only */
+  collection?: EvmCollectionChoice;
 };
 
 export type MintResult = {
@@ -19,6 +27,9 @@ export type MintResult = {
   /** All batch txs when an EVM NFT quantity > 1 was minted */
   txHashes?: string[];
   contractAddress?: string;
+  /** User-created EVM collection (not the shared STAMP one) */
+  collectionName?: string;
+  collectionSymbol?: string;
   tokenId?: string;
   amount?: string;
   kind?: TokenKind;

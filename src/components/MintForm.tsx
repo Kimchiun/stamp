@@ -16,6 +16,8 @@ type Props = {
   maxAmount?: number;
   /** Show quantity input even for single NFT (EVM batch minting) */
   showQuantity?: boolean;
+  /** Hide the symbol field (symbol belongs to a user-created collection) */
+  hideSymbol?: boolean;
   preview: string | null;
   /** EVM uses shared STAMP collection — symbol is locked */
   lockSymbol?: boolean;
@@ -34,6 +36,7 @@ export function MintForm({
   amount,
   maxAmount = 1_000_000,
   showQuantity = false,
+  hideSymbol = false,
   preview,
   lockSymbol = false,
   onChange,
@@ -68,7 +71,8 @@ export function MintForm({
           )}
         </label>
 
-        <div className={`grid gap-4 ${isMulti || showQuantity ? "grid-cols-2" : ""}`}>
+        <div className={`grid gap-4 ${(isMulti || showQuantity) && !hideSymbol ? "grid-cols-2" : ""}`}>
+          {!hideSymbol && (
           <label className="block">
             <span className="xerox-label mb-1.5 block text-[var(--ink)]/55">심볼</span>
             <input
@@ -93,6 +97,7 @@ export function MintForm({
               )
             )}
           </label>
+          )}
 
           {(isMulti || showQuantity) && (
             <label className="block">

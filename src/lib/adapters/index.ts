@@ -42,7 +42,9 @@ export async function mintNft(
     name: input.name,
     symbol: input.symbol,
     // EVM collection identity is fixed STAMP; only metadata name is user-controlled
-    platformSymbol: chain.family === "evm",
+    platformSymbol:
+      chain.family === "evm" &&
+      !(input.kind === "nft" && input.collection?.mode === "new"),
   });
   if (hits.length > 0) {
     return { success: false, error: hits.map((h) => h.reason).join(" ") };
@@ -64,8 +66,8 @@ export async function mintNft(
   }
 }
 
-export { connectEvmWallet, mintOnEvm, estimateEvmMintFee, MAX_EVM_MULTI_AMOUNT, MAX_EVM_NFT_QUANTITY, EVM_NFT_BATCH_SIZE } from "./evm";
-export type { FeeEstimate, EvmMintStep } from "./evm";
+export { connectEvmWallet, mintOnEvm, estimateEvmMintFee, listMyCollections, MAX_EVM_MULTI_AMOUNT, MAX_EVM_NFT_QUANTITY, EVM_NFT_BATCH_SIZE } from "./evm";
+export type { FeeEstimate, EvmMintStep, UserCollection } from "./evm";
 export { connectSolanaWallet, mintOnSolana } from "./solana";
 export { connectTronWallet, mintOnTron } from "./tron";
 export {
