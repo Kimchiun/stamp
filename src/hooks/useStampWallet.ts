@@ -138,6 +138,11 @@ export function useStampWallet(chain: SupportedChain) {
         scroll: nets.scroll,
         kaia: nets.kaia,
         silicon: nets.silicon,
+        base: nets.base,
+        optimism: nets.optimism,
+        gnosis: nets.gnosis,
+        linea: nets.linea,
+        mantle: nets.mantle,
         chainbounty,
       };
       const network = map[chain.id];

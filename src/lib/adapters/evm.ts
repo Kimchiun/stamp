@@ -52,6 +52,11 @@ const CREATE2_KNOWN_CHAIN_IDS = new Set([
   43114, // avalanche
   534352, // scroll
   8217, // kaia
+  8453, // base
+  10, // optimism
+  100, // gnosis
+  59144, // linea
+  5000, // mantle
 ]);
 
 /** Browser must use same-origin proxy — public RPCs often block CORS. */
